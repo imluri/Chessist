@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1.0
+
+### Added
+- **Lichess support** — full eval bar, best-move arrows, move classification icons, auto-move, accuracy tracking, W/L balance, auto-rematch, and all other features now work on lichess.org in addition to Chess.com
+- **Lichess auto-move** — uses click-to-move directly on Chessground (CSP blocks inline script injection on lichess)
+- **Lichess spectator mode** — eval bar and best-move arrows calculate for both sides when watching games on the home TV feed or any spectated game
+- **Puzzle mode detection** — Lichess training/puzzle pages follow the current turn for color detection
+- **Instant move disables timing controls** — delay min/max inputs and Smart Timing toggle are greyed out and non-interactive when Instant Move is enabled
+
+### Fixed
+- **Lichess CSP violation** — removed `tryPageContextMove` which injected inline scripts blocked by lichess's Content Security Policy, causing auto-move to silently do nothing
+- **Accuracy icons showing when disabled on Lichess** — popup settings changes were only broadcast to Chess.com tabs; Lichess tabs now receive all setting updates immediately
+- **Auto-move firing on spectated Lichess games** — auto-move is now gated to games where the user is an active participant; no longer attempts moves on the home TV feed or top-rated player games
+- **Stale accuracy when force-moving during calculation** — `prevCpWhite` now updates on every eval depth rather than only at target depth, so manually moving before Stockfish finishes no longer causes accuracy to be calculated from a two-move-old eval
+- **Best-move arrow only showing for white when spectating** — `detectPlayerColor()` incorrectly read board orientation on TV/home page boards; now returns `null` when not in own game so arrows are drawn for whichever side is to move
+- **`.rclock` false positive in spectator detection** — clock elements are visible to spectators too; own-game detection now relies solely on `lichess.round.data.player.color`
+- **Puzzle mode broken by spectator detection** — puzzle URLs (`/training/...`) matched the 8-char game ID pattern and triggered the `isInOwnGame()` check too early; puzzle check is now evaluated first
+
+---
+
 ## v1.0.2
 
 ### Added

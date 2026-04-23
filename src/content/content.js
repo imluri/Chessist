@@ -1541,13 +1541,14 @@
     // Now rawCp and rawMate are from WHITE's perspective
     // Positive = white winning, Negative = black winning
 
-    // Store eval for accuracy calculation: capture when player's eval is sufficiently deep
+    // Store eval for accuracy calculation: update on every player eval so a force-move
+    // mid-calculation still has a valid prevCpWhite to compare against.
     const isPlayerTurnForEval = playerColor && evalTurn === playerColor;
-    if (evaluation.depth >= targetDepth && isPlayerTurnForEval) {
+    if (isPlayerTurnForEval) {
       prevCpWhite = rawMate !== undefined
         ? (rawMate > 0 ? 10000 : -10000)
         : rawCp;
-      prevBestMove = evaluation.bestMove || null;
+      if (evaluation.depth >= targetDepth) prevBestMove = evaluation.bestMove || null;
     }
 
     // Flip everything if player is black (bar and score)

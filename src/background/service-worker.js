@@ -586,16 +586,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       target: { tabId },
       world: 'MAIN',
       func: (from, to, promo) => {
-        const board = document.querySelector('wc-chess-board') || document.querySelector('chess-board');
-        if (!board) return false;
-
         const files = 'abcdefgh';
-        const isFlipped = board.classList.contains('flipped') || board.getAttribute('board-orientation') === 'black';
 
-        // Use inner .board element if available (inside shadow root), else outer board
-        const surface = board.querySelector('.board')
-                     || board.shadowRoot?.querySelector('.board')
-                     || board;
+        // Detect site and find the appropriate board element
+        const cgWrap = document.querySelector('cg-wrap') || document.querySelector('.cg-wrap');
+        const chessComBoard = document.querySelector('wc-chess-board') || document.querySelector('chess-board');
+
+        const isLichess = !!cgWrap;
+
+        let isFlipped, surface;
+
+        if (isLichess) {
+          isFlipped = cgWrap.classList.contains('orientation-black');
+          surface = cgWrap.querySelector('cg-board') || cgWrap;
+        } else {
+          if (!chessComBoard) return false;
+          isFlipped = chessComBoard.classList.contains('flipped') || chessComBoard.getAttribute('board-orientation') === 'black';
+          surface = chessComBoard.querySelector('.board')
+                 || chessComBoard.shadowRoot?.querySelector('.board')
+                 || chessComBoard;
+        }
+
         const rect = surface.getBoundingClientRect();
         const sz = rect.width / 8;
 
@@ -606,22 +617,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { x, y };
         }
 
-        function fireClick(x, y) {
-          const el = document.elementFromPoint(x, y) || board;
-          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }));
-          el.dispatchEvent(new MouseEvent('mousedown',     { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1 }));
-          el.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0 }));
-          el.dispatchEvent(new MouseEvent('mouseup',       { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 0 }));
-          el.dispatchEvent(new MouseEvent('click',         { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
-        }
-
         const fp = sqPx(from), tp = sqPx(to);
 
-        // Click FROM square to select piece
-        fireClick(fp.x, fp.y);
+        if (isLichess) {
+          // Lichess/chessground: drag interaction (pointerdown on piece → pointermove → pointerup at dest)
+          function fire(el, type, x, y, btns) {
+            el.dispatchEvent(new PointerEvent(type, {
+              bubbles: true, cancelable: true, composed: true,
+              clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse',
+              isPrimary: true, button: 0, buttons: btns != null ? btns : 1
+            }));
+          }
 
-        // Click TO square to place piece
-        setTimeout(() => fireClick(tp.x, tp.y), 100);
+          // Find piece at from-square by transform
+          let pieceEl = null;
+          const pieces = surface.querySelectorAll('piece');
+          let bestDist = sz;
+          for (const p of pieces) {
+            const m = p.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
+            if (!m) continue;
+            const px = parseFloat(m[1]), py = parseFloat(m[2]);
+            const ef = files.indexOf(from[0]), er = parseInt(from[1]) - 1;
+            const ex = isFlipped ? (7 - ef) * sz : ef * sz;
+            const ey = isFlipped ? er * sz : (7 - er) * sz;
+            const d = Math.hypot(px - ex, py - ey);
+            if (d < bestDist) { bestDist = d; pieceEl = p; }
+          }
+
+          const fromEl = pieceEl || document.elementFromPoint(fp.x, fp.y) || surface;
+          fire(fromEl, 'pointerdown', fp.x, fp.y, 1);
+          fromEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: fp.x, clientY: fp.y, button: 0, buttons: 1 }));
+
+          setTimeout(() => {
+            document.dispatchEvent(new PointerEvent('pointermove', {
+              bubbles: true, cancelable: true, composed: true,
+              clientX: tp.x, clientY: tp.y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1
+            }));
+            setTimeout(() => {
+              const toEl = document.elementFromPoint(tp.x, tp.y) || surface;
+              fire(toEl, 'pointerup', tp.x, tp.y, 0);
+              toEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: tp.x, clientY: tp.y, button: 0 }));
+            }, 50);
+          }, 50);
+        } else {
+          // Chess.com: click FROM then click TO
+          function fireClick(x, y) {
+            const el = document.elementFromPoint(x, y) || chessComBoard;
+            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }));
+            el.dispatchEvent(new MouseEvent('mousedown',     { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1 }));
+            el.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0 }));
+            el.dispatchEvent(new MouseEvent('mouseup',       { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 0 }));
+            el.dispatchEvent(new MouseEvent('click',         { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+          }
+
+          fireClick(fp.x, fp.y);
+          setTimeout(() => fireClick(tp.x, tp.y), 100);
+        }
 
         return true;
       },
@@ -971,11 +1022,15 @@ async function handleWasmEvaluation(fen, depth, sendResponse) {
   }
 }
 
-// Broadcast message to all Chess.com tabs
+// Broadcast message to all Chess.com and Lichess tabs
 async function broadcastToContentScripts(message) {
   try {
-    // Send to content scripts in Chess.com tabs
-    const tabs = await chrome.tabs.query({ url: 'https://www.chess.com/*' });
+    // Send to content scripts in Chess.com and Lichess tabs
+    const [chessTabs, lichessTabs] = await Promise.all([
+      chrome.tabs.query({ url: 'https://www.chess.com/*' }),
+      chrome.tabs.query({ url: 'https://lichess.org/*' })
+    ]);
+    const tabs = [...chessTabs, ...lichessTabs];
     for (const tab of tabs) {
       try {
         await chrome.tabs.sendMessage(tab.id, message);

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Chessist",
-  "version": "1.0.0",
-  "description": "Live chess evaluation bar for Chess.com - powered by Stockfish. Created by lurimous.",
+  "version": "1.1.0",
+  "description": "Live chess evaluation bar for Chess.com and Lichess - powered by Stockfish. Created by lurimous.",
   "permissions": [
     "storage",
     "offscreen",
@@ -11,7 +11,8 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://www.chess.com/*"
+    "https://www.chess.com/*",
+    "https://lichess.org/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -20,6 +21,12 @@
     {
       "matches": ["https://www.chess.com/*"],
       "js": ["src/content/content.js"],
+      "css": ["src/content/content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://lichess.org/*"],
+      "js": ["src/content/lichess.js"],
       "css": ["src/content/content.css"],
       "run_at": "document_idle"
     }

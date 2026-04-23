@@ -88,6 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   smartTimingToggle.checked = settings.smartTiming !== false; // Default true
   delayMinInput.value = settings.autoMoveDelayMin ?? 0.5;
   delayMaxInput.value = settings.autoMoveDelayMax ?? 2;
+  updateInstantModeUI();
   skillLevelInput.value = settings.skillLevel ?? 20;
   skillValueEl.textContent = skillLevelInput.value;
 
@@ -155,10 +156,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     notifyContentScripts({ type: 'SETTINGS_UPDATED', autoMove: autoMoveToggle.checked });
   });
 
+  function updateInstantModeUI() {
+    const instant = instantMoveToggle.checked;
+    const delaySettings = document.getElementById('delaySettings');
+    const smartTimingToggleEl = document.getElementById('smartTimingToggle');
+    delayMinInput.disabled = instant;
+    delayMaxInput.disabled = instant;
+    delaySettings?.classList.toggle('timing-disabled', instant);
+    smartTimingToggleEl?.classList.toggle('timing-disabled', instant);
+  }
+
   // Toggle instant move
   instantMoveToggle.addEventListener('change', async () => {
     await chrome.storage.sync.set({ instantMove: instantMoveToggle.checked });
     notifyContentScripts({ type: 'SETTINGS_UPDATED', instantMove: instantMoveToggle.checked });
+    updateInstantModeUI();
   });
 
   // Toggle smart timing
@@ -541,7 +553,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Notify content scripts helper
   async function notifyContentScripts(message) {
-    const tabs = await chrome.tabs.query({ url: 'https://www.chess.com/*' });
+    const [chessTabs, lichessTabs] = await Promise.all([
+      chrome.tabs.query({ url: 'https://www.chess.com/*' }),
+      chrome.tabs.query({ url: 'https://lichess.org/*' })
+    ]);
+    const tabs = [...chessTabs, ...lichessTabs];
     for (const tab of tabs) {
       try {
         await chrome.tabs.sendMessage(tab.id, message);

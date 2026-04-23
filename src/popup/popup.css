@@ -833,5 +833,9 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 11px;
 }
 
+.timing-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
 
 /* kept for native help section */
