@@ -1,3 +1,4 @@
 native-host/__pycache__/
 overlay/bin/Debug/
 overlay/obj/
+*.log
