@@ -32,6 +32,33 @@
       <span id="overlayStatusText"></span>
     </div>
 
+    <div id="overlayDebugRow" class="sub-toggle-row hidden">
+      <label class="toggle" id="overlayDebugToggleLabel">
+        <input type="checkbox" id="overlayDebug">
+        <span class="slider"></span>
+        <span class="label">Debug Mode <span class="tooltip" data-tip="Restarts overlay with console window for troubleshooting">?</span></span>
+      </label>
+    </div>
+
+    <div id="manualMapRow" class="sub-toggle-row hidden" style="display:none">
+      <label class="toggle" id="manualMapToggle">
+        <input type="checkbox" id="manualMap">
+        <span class="slider"></span>
+        <span class="label">Manual Map <span class="tooltip" data-tip="Show corner markers and apply X/Y offsets to fix overlay position (e.g. Opera sidebar)">?</span></span>
+      </label>
+    </div>
+
+    <div id="manualOffsetControls" class="manual-offset-controls hidden">
+      <div class="offset-row">
+        <span class="offset-label">X Offset</span>
+        <input type="number" class="offset-input" id="offsetXInput" value="0">
+      </div>
+      <div class="offset-row">
+        <span class="offset-label">Y Offset</span>
+        <input type="number" class="offset-input" id="offsetYInput" value="0">
+      </div>
+    </div>
+
     <div class="divider"></div>
 
     <div class="settings-section">

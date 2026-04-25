@@ -52,6 +52,9 @@
   const ACCURACY_EVAL_DEPTH = 10;
 
   let overlayMode = false;
+  let manualMap = false;
+  let manualOffsetX = 0;
+  let manualOffsetY = 0;
   let targetDepth = 18;
   let stealthMode = false;
   let instantMove = false;
@@ -105,6 +108,10 @@
       matchElo = result.matchElo === true;
       manualElo = result.manualElo ?? null;
       overlayMode = result.overlayMode === true;
+      const localData = await chrome.storage.local.get(['manualMap', 'manualOffsetX', 'manualOffsetY']);
+      manualMap     = localData.manualMap     === true;
+      manualOffsetX = localData.manualOffsetX ?? 0;
+      manualOffsetY = localData.manualOffsetY ?? 0;
       if (overlayMode) {
         _connectOverlayWs();
         if (evalBar) evalBar.style.display = 'none';
@@ -146,7 +153,15 @@
     return { x, y };
   }
 
+  function _teardownDomElements() {
+    if (evalBar) { evalBar.remove(); evalBar = null; evalBarFill = null; evalScore = null;
+      depthEl = null; bestMoveEl = null; countdownEl = null; turnIndicatorEl = null; accuracyEl = null; }
+    if (arrowOverlay) { arrowOverlay.remove(); arrowOverlay = null; }
+    document.querySelectorAll('.chess-live-eval-arrow-overlay').forEach(el => el.remove());
+  }
+
   function createArrowOverlay(board) {
+    if (overlayMode) return null;
     if (arrowOverlay && arrowOverlay.parentElement === board) return arrowOverlay;
     if (arrowOverlay) { arrowOverlay.remove(); arrowOverlay = null; }
     document.querySelectorAll('.chess-live-eval-arrow-overlay').forEach(el => el.remove());
@@ -779,6 +794,7 @@
 
   function createEvalBar(board) {
     if (evalBar) return;
+    if (overlayMode) return;
 
     log('Chessist: Creating eval bar for lichess');
 
@@ -834,7 +850,6 @@
     const parentStyle = window.getComputedStyle(insertParent);
     if (parentStyle.position === 'static') insertParent.style.position = 'relative';
     insertParent.insertBefore(evalBar, board);
-    if (overlayMode) evalBar.style.display = 'none';
 
     // Track board size changes
     const resizeObserver = new ResizeObserver((entries) => {
@@ -867,6 +882,7 @@
   let _overlayReconnectTimer = null;
   let _boardObserver = null;
   let _observedBoard = null;
+  let _lastEvaluation = null;
 
   function _connectOverlayWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
@@ -875,6 +891,8 @@
       _overlayWs.onopen  = () => {
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
+        if (_lastEvaluation) updateEval(_lastEvaluation);
+        else if (currentFen) requestEval(currentFen);
       };
       _overlayWs.onclose = () => {
         _overlayWs = null;
@@ -929,6 +947,12 @@
       sendPositionUpdate();
     }
   }, 250);
+
+  // Fallback: re-show overlay every 1s when focused, in case the focus event was missed
+  setInterval(() => {
+    if (!overlayMode || !isEnabled || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
+    if (document.hasFocus()) sendPositionUpdate();
+  }, 1000);
   window.addEventListener('resize', sendPositionUpdate);
   window.addEventListener('scroll', sendPositionUpdate, { passive: true });
   document.addEventListener('fullscreenchange', sendPositionUpdate);
@@ -938,11 +962,19 @@
   }
   _watchZoom();
 
-  // Tab/window focus: JS tells C# directly — no HWND guessing needed.
-  window.addEventListener('focus', () => { if (overlayMode) sendPositionUpdate(); });
-  window.addEventListener('blur',  () => {
-    if (!overlayMode || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-    try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+  document.addEventListener('visibilitychange', () => {
+    if (!overlayMode) return;
+    if (document.hidden) {
+      if (_overlayWs?.readyState === WebSocket.OPEN)
+        try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+    } else {
+      if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN) sendPositionUpdate();
+      else _connectOverlayWs();
+    }
+  });
+  window.addEventListener('focus', () => {
+    if (!overlayMode) return;
+    if (!(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectOverlayWs();
   });
 
   function sendOverlayUpdate(fillPercent, displayScore, isFlipped, evaluation) {
@@ -979,14 +1011,17 @@
         dpr,
         evalBar: { fillPercent, isFlipped, score: displayScore },
         arrows,
+        manualMap,
+        offsetX: manualOffsetX,
+        offsetY: manualOffsetY,
       }));
     } catch (e) {}
   }
 
   function updateEval(evaluation) {
-    if (!evalBar) return;
+    if (!evalBar && !overlayMode) return;
 
-    if (evaluation.depth >= targetDepth) evalBar.classList.remove('loading');
+    if (evalBar && evaluation.depth >= targetDepth) evalBar.classList.remove('loading');
 
     if (isPuzzleMode() || !playerColor) playerColor = detectPlayerColor();
 
@@ -1736,7 +1771,16 @@
       try {
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
-          if (evalBar) evalBar.style.display = (isEnabled && !overlayMode) ? 'block' : 'none';
+          if (overlayMode) {
+            if (!isEnabled) {
+              if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)
+                try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+            } else {
+              sendPositionUpdate();
+            }
+          } else {
+            if (evalBar) evalBar.style.display = isEnabled ? 'block' : 'none';
+          }
         } else if (message.type === 'SETTINGS_UPDATED') {
           if (message.showBestMove !== undefined) {
             showBestMove = message.showBestMove;
@@ -1779,11 +1823,22 @@
             }
           }
           if (message.manualElo !== undefined) manualElo = message.manualElo;
+          if (message.manualMap !== undefined) manualMap = message.manualMap;
+          if (message.manualOffsetX !== undefined) manualOffsetX = message.manualOffsetX;
+          if (message.manualOffsetY !== undefined) manualOffsetY = message.manualOffsetY;
           if (message.overlayMode !== undefined) {
             overlayMode = message.overlayMode;
-            if (evalBar) evalBar.style.display = overlayMode ? 'none' : '';
-            if (overlayMode) { clearArrow(); clearMoveIcon(); _connectOverlayWs(); }
-            else _disconnectOverlayWs();
+            if (overlayMode) {
+              _teardownDomElements();
+              _connectOverlayWs();
+            } else {
+              _disconnectOverlayWs();
+              const board = findBoard();
+              if (board) {
+                createEvalBar(board);
+                createArrowOverlay(board);
+              }
+            }
           }
         } else if (message.type === 'RE_EVALUATE') {
           if (currentFen && isEnabled) { evalBar?.classList.add('loading'); requestEval(currentFen); }

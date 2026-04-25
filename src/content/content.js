@@ -53,6 +53,9 @@
   const ACCURACY_EVAL_DEPTH = 10;   // Minimum depth for accuracy calculation
 
   let overlayMode = false; // Send eval data to native overlay window
+  let manualMap = false;
+  let manualOffsetX = 0;
+  let manualOffsetY = 0;
   let targetDepth = 18; // Default depth
   let stealthMode = false; // Disable console logging when true
   let instantMove = false; // Make moves instantly without delay
@@ -117,6 +120,10 @@
       matchElo = result.matchElo === true;
       manualElo = result.manualElo ?? null;
       overlayMode = result.overlayMode === true;
+      const localData = await chrome.storage.local.get(['manualMap', 'manualOffsetX', 'manualOffsetY']);
+      manualMap     = localData.manualMap     === true;
+      manualOffsetX = localData.manualOffsetX ?? 0;
+      manualOffsetY = localData.manualOffsetY ?? 0;
       if (overlayMode) {
         _connectOverlayWs();
         if (evalBar) evalBar.style.display = 'none';
@@ -175,6 +182,7 @@
   // Create SVG arrow overlay on the board
   // Uses viewBox="0 0 100 100" to match Chess.com's coordinate system
   function createArrowOverlay(board) {
+    if (overlayMode) return null;
     // Check if existing overlay is still valid (inside the board)
     if (arrowOverlay && arrowOverlay.parentElement === board) {
       return arrowOverlay;
@@ -1356,9 +1364,32 @@
 
 
   // Create evaluation bar element
+  function _teardownDomElements() {
+    if (evalBar) {
+      if (evalBar === document.getElementById('evaluation')) {
+        if (_nativeEvalOriginalClass !== null) {
+          evalBar.className = _nativeEvalOriginalClass;
+          _nativeEvalOriginalClass = null;
+        }
+        evalBar.innerHTML = '';
+      } else {
+        evalBar.remove();
+      }
+      evalBar = null; evalBarFill = null; evalScore = null;
+      depthEl = null; bestMoveEl = null; countdownEl = null;
+      turnIndicatorEl = null; accuracyEl = null;
+    }
+    if (evalBarContainer) { evalBarContainer.style.display = ''; evalBarContainer = null; }
+    if (arrowOverlay) { arrowOverlay.remove(); arrowOverlay = null; }
+    document.querySelectorAll('.chess-live-eval-arrow-overlay').forEach(el => el.remove());
+  }
+
+  let _nativeEvalOriginalClass = null;
+
   function createEvalBar(board) {
     // Check if already created
     if (evalBar) return;
+    if (overlayMode) return;
 
     // Try to use Chess.com's native evaluation container first
     const nativeEvalContainer = document.getElementById('board-layout-evaluation');
@@ -1368,9 +1399,10 @@
       log('Chessist: Using native Chess.com eval container');
 
       evalBarContainer = nativeEvalContainer;
-      if (!overlayMode) nativeEvalContainer.style.display = 'block';
+      nativeEvalContainer.style.display = 'block';
 
       // Clear any existing content and use as our eval bar
+      _nativeEvalOriginalClass = nativeEvalInner.className;
       nativeEvalInner.innerHTML = '';
       nativeEvalInner.className = 'chess-live-eval-bar';
 
@@ -1543,6 +1575,7 @@
   let _overlayReconnectTimer = null;
   let _boardObserver = null;
   let _observedBoard = null;
+  let _lastEvaluation = null; // cached for immediate redraw on WS reconnect
 
   function _connectOverlayWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
@@ -1550,7 +1583,9 @@
       _overlayWs = new WebSocket('ws://127.0.0.1:27301');
       _overlayWs.onopen  = () => {
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
-        sendPositionUpdate(); // sync position immediately on connect
+        sendPositionUpdate();
+        if (_lastEvaluation) updateEval(_lastEvaluation); // immediate redraw with cached data
+        else if (currentFen) requestEval(currentFen);
       };
       _overlayWs.onclose = () => {
         _overlayWs = null;
@@ -1605,6 +1640,12 @@
       sendPositionUpdate();
     }
   }, 250);
+
+  // Fallback: re-show overlay every 1s when focused, in case the focus event was missed
+  setInterval(() => {
+    if (!overlayMode || !isEnabled || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
+    if (document.hasFocus()) sendPositionUpdate();
+  }, 1000);
   window.addEventListener('resize', sendPositionUpdate);
   window.addEventListener('scroll', sendPositionUpdate, { passive: true });
   document.addEventListener('fullscreenchange', sendPositionUpdate);
@@ -1614,11 +1655,22 @@
   }
   _watchZoom();
 
-  // Tab/window focus: JS tells C# directly — no HWND guessing needed.
-  window.addEventListener('focus', () => { if (overlayMode) sendPositionUpdate(); });
-  window.addEventListener('blur',  () => {
-    if (!overlayMode || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-    try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+  // Tab hide/show (tab switch, minimize) — popup opening does NOT trigger visibilitychange.
+  // Alt-tab is handled by the C# foreground check so no blur→visible:false needed.
+  document.addEventListener('visibilitychange', () => {
+    if (!overlayMode) return;
+    if (document.hidden) {
+      if (_overlayWs?.readyState === WebSocket.OPEN)
+        try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+    } else {
+      if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN) sendPositionUpdate();
+      else _connectOverlayWs();
+    }
+  });
+  // Reconnect WS if closed while away (popup, alt-tab, etc.)
+  window.addEventListener('focus', () => {
+    if (!overlayMode) return;
+    if (!(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectOverlayWs();
   });
 
   function sendOverlayUpdate(fillPercent, displayScore, isFlipped, evaluation) {
@@ -1658,16 +1710,20 @@
         dpr,
         evalBar: { fillPercent, isFlipped, score: displayScore },
         arrows,
+        manualMap,
+        offsetX: manualOffsetX,
+        offsetY: manualOffsetY,
       }));
     } catch (e) {}
   }
 
   // Update evaluation display
   function updateEval(evaluation) {
-    if (!evalBar) return;
+    if (!evalBar && !overlayMode) return;
+    _lastEvaluation = evaluation;
 
     // Only remove loading state when we reach target depth
-    if (evaluation.depth >= targetDepth) {
+    if (evalBar && evaluation.depth >= targetDepth) {
       evalBar.classList.remove('loading');
     }
 
@@ -2611,8 +2667,17 @@
       try {
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
-          if (evalBar) evalBar.style.display = (isEnabled && !overlayMode) ? 'block' : 'none';
-          if (evalBarContainer) evalBarContainer.style.display = (isEnabled && !overlayMode) ? 'block' : 'none';
+          if (overlayMode) {
+            if (!isEnabled) {
+              if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)
+                try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+            } else {
+              sendPositionUpdate();
+            }
+          } else {
+            if (evalBar) evalBar.style.display = isEnabled ? 'block' : 'none';
+            if (evalBarContainer) evalBarContainer.style.display = isEnabled ? 'block' : 'none';
+          }
         } else if (message.type === 'SETTINGS_UPDATED') {
           // Update showBestMove if provided
           if (message.showBestMove !== undefined) {
@@ -2720,12 +2785,22 @@
             }
           }
           if (message.manualElo !== undefined) manualElo = message.manualElo;
+          if (message.manualMap !== undefined) manualMap = message.manualMap;
+          if (message.manualOffsetX !== undefined) manualOffsetX = message.manualOffsetX;
+          if (message.manualOffsetY !== undefined) manualOffsetY = message.manualOffsetY;
           if (message.overlayMode !== undefined) {
             overlayMode = message.overlayMode;
-            if (evalBar) evalBar.style.display = overlayMode ? 'none' : '';
-            if (evalBarContainer) evalBarContainer.style.display = overlayMode ? 'none' : 'block';
-            if (overlayMode) { clearArrow(); clearMoveIcon(); _connectOverlayWs(); }
-            else _disconnectOverlayWs();
+            if (overlayMode) {
+              _teardownDomElements();
+              _connectOverlayWs();
+            } else {
+              _disconnectOverlayWs();
+              const board = findBoard();
+              if (board) {
+                createEvalBar(board);
+                createArrowOverlay(board);
+              }
+            }
           }
         } else if (message.type === 'RE_EVALUATE') {
           // Engine switched - trigger re-evaluation of current position

@@ -745,6 +745,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
+  if (message.type === 'RESTART_OVERLAY') {
+    if (nativePort && nativeConnected) {
+      sendToNativePort({ type: 'stop_overlay' });
+      setTimeout(() => sendToNativePort({ type: 'start_overlay', debug: message.debug === true }), 500);
+    }
+    return;
+  }
+
   if (message.type === 'SET_ENGINE_SOURCE') {
     engineSource = message.source;
     reconnectAttempts = 0; // Reset attempts on manual source change

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.1 — Overlay fixes
+
+### Fixed
+- **Overlay not drawing on page load** — eval completed before the WebSocket connected so nothing was ever sent; last evaluation is now cached and immediately replayed when the overlay connects
+- **Overlay hiding when extension popup opens** — `window.blur` fired whenever the popup opened, sending `visible: false`; replaced with `visibilitychange` which only fires on actual tab switches and minimises
+- **Overlay hiding on alt-tab** — added `GetForegroundWindow()` check in the C# render loop; overlay blanks only when a non-browser window is foreground
+- **Debug mode overlay blank** — `AllocConsole()` window (owned by the overlay process) caused `IsActualBrowser()` to return false; added `_selfPid` check to whitelist the overlay's own windows
+- **"View Logs" opening a hidden log window** — replaced the in-process `LogWindow` form with file-based logging (`ChessistOverlay.log`) opened in the system default text editor
+
+### Added
+- **Debug Mode toggle** — sub-option under Overlay Mode; restarts the overlay exe with `-debug` flag, showing a console window for live troubleshooting
+- **Always-on file logging** — overlay writes a timestamped log to `ChessistOverlay.log` in all modes (not just debug)
+
+---
+
 ## v1.2.0 — Overlay update
 
 ### Added

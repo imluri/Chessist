@@ -49,6 +49,9 @@ namespace ChessistOverlay
         [DataMember(Name = "dpr")]          public double      Dpr;
         [DataMember(Name = "evalBar")]      public EvalBarMsg?  EvalBar;
         [DataMember(Name = "arrows")]       public ArrowMsg[]?  Arrows;
+        [DataMember(Name = "manualMap")]    public bool        ManualMap;
+        [DataMember(Name = "offsetX")]      public int         OffsetX;
+        [DataMember(Name = "offsetY")]      public int         OffsetY;
     }
 
     // ── Win32 P/Invoke ────────────────────────────────────────────────────────────
@@ -94,6 +97,7 @@ namespace ChessistOverlay
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder buf, int n);
         [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc fn, IntPtr lParam);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc fn, IntPtr lParam);
         [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hWnd, ref POINT pt);
         [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -110,6 +114,39 @@ namespace ChessistOverlay
         POINT  _lastOrigin;       // last ClientToScreen result — skip Blit if unchanged
         bool   _stateDirty;       // new WS message arrived — force repaint even if origin unchanged
         bool   _isBlank;          // true after Blank() so the 16ms timer doesn't re-blit a transparent frame
+        IntPtr _lastFgWnd;        // cached foreground window — only re-check IsActualBrowser when it changes
+        bool   _lastFgIsBrowser;
+
+        // Manual mapping — loaded from INI, updated via WS, persisted back to INI
+        bool _manualMap;
+        int  _manualOffsetX;
+        int  _manualOffsetY;
+
+        static string IniPath => System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistOverlay.ini");
+
+        static void ReadIni(out bool manualMap, out int offsetX, out int offsetY)
+        {
+            manualMap = false; offsetX = 0; offsetY = 0;
+            if (!System.IO.File.Exists(IniPath)) return;
+            foreach (var line in System.IO.File.ReadAllLines(IniPath))
+            {
+                var kv = line.Split('=');
+                if (kv.Length != 2) continue;
+                switch (kv[0].Trim())
+                {
+                    case "enabled": manualMap = kv[1].Trim() == "true"; break;
+                    case "offsetX": int.TryParse(kv[1].Trim(), out offsetX); break;
+                    case "offsetY": int.TryParse(kv[1].Trim(), out offsetY); break;
+                }
+            }
+        }
+
+        static void WriteIni(bool manualMap, int offsetX, int offsetY)
+        {
+            System.IO.File.WriteAllText(IniPath,
+                $"[ManualMap]\nenabled={manualMap.ToString().ToLower()}\noffsetX={offsetX}\noffsetY={offsetY}\n");
+        }
 
         public OverlayForm()
         {
@@ -136,6 +173,8 @@ namespace ChessistOverlay
             if (!DebugLog.Enabled)
                 SetWindowDisplayAffinity(Handle, WDA_EXCLUDEFROMCAPTURE);
 
+            ReadIni(out _manualMap, out _manualOffsetX, out _manualOffsetY);
+
             // Re-query ClientToScreen at ~60 fps so the overlay tracks window drags live.
             _trackTimer = new System.Windows.Forms.Timer { Interval = 16 };
             _trackTimer.Tick += (_, _) => Redraw();
@@ -152,10 +191,13 @@ namespace ChessistOverlay
 
         // Electron apps (VS Code, Discord, Slack…) share Chrome's window class names,
         // so we verify by process name before caching a render widget handle.
+        static readonly uint _selfPid = (uint)Process.GetCurrentProcess().Id;
+
         static bool IsActualBrowser(IntPtr hwnd)
         {
             if (hwnd == IntPtr.Zero) return false;
             GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == _selfPid) return true; // our own console / log window — never hide
             try
             {
                 using var proc = Process.GetProcessById((int)pid);
@@ -182,6 +224,13 @@ namespace ChessistOverlay
             else
             {
                 _state = msg;
+                if (_manualMap != msg.ManualMap || _manualOffsetX != msg.OffsetX || _manualOffsetY != msg.OffsetY)
+                {
+                    _manualMap    = msg.ManualMap;
+                    _manualOffsetX = msg.OffsetX;
+                    _manualOffsetY = msg.OffsetY;
+                    WriteIni(_manualMap, _manualOffsetX, _manualOffsetY);
+                }
             }
             _stateDirty = true;
 
@@ -195,13 +244,15 @@ namespace ChessistOverlay
                 Blank(); return;
             }
 
+            // Hide when the browser isn't the foreground window (catches missed JS focus events)
+            IntPtr fg = GetForegroundWindow();
+            if (fg != _lastFgWnd) { _lastFgWnd = fg; _lastFgIsBrowser = IsActualBrowser(fg); }
+            if (!_lastFgIsBrowser) { Blank(); return; }
+
             // Get the physical screen origin of Chrome's web content area.
             // Only search inside actual browser processes — prevents VS Code/Electron contamination.
             if (_cachedRenderWnd == IntPtr.Zero || !IsWindow(_cachedRenderWnd))
-            {
-                IntPtr fg = GetForegroundWindow();
-                _cachedRenderWnd = IsActualBrowser(fg) ? FindRenderWidget(fg) : IntPtr.Zero;
-            }
+                _cachedRenderWnd = FindRenderWidget(fg);
 
             var origin = new POINT { X = 0, Y = 0 };
             if (_cachedRenderWnd != IntPtr.Zero)
@@ -217,8 +268,8 @@ namespace ChessistOverlay
                 Console.WriteLine($"  [redraw] render=0x{_cachedRenderWnd.ToInt64():X}  origin=({origin.X},{origin.Y})  view=({_state.ViewX:F1},{_state.ViewY:F1})  w={_state.Width:F0}  dpr={_state.Dpr:F2}");
 
             double dpr  = _state.Dpr > 0 ? _state.Dpr : 1.0;
-            int physX = origin.X + (int)Math.Round(_state.ViewX * dpr);
-            int physY = origin.Y + (int)Math.Round(_state.ViewY * dpr);
+            int physX = origin.X + (int)Math.Round((_state.ViewX + (_manualMap ? _manualOffsetX : 0)) * dpr);
+            int physY = origin.Y + (int)Math.Round((_state.ViewY + (_manualMap ? _manualOffsetY : 0)) * dpr);
             int physW = (int)Math.Round(_state.Width  * dpr);
             int physH = (int)Math.Round(_state.Height * dpr);
 
@@ -245,13 +296,14 @@ namespace ChessistOverlay
                         DrawArrow(g, bx, by, bw, bh, _state.Flipped, _state.Arrows[i], i);
                 }
 
-                if (DebugLog.Enabled)
+                if (DebugLog.Enabled || _manualMap)
                 {
-                    DrawDebugDot(g, origin.X - vs.Left, origin.Y - vs.Top, Color.Cyan,   "content-origin");
-                    DrawDebugDot(g, bx,      by,      Color.Red,  "board-TL");
-                    DrawDebugDot(g, bx + bw, by,      Color.Red,  "board-TR");
-                    DrawDebugDot(g, bx,      by + bh, Color.Red,  "board-BL");
-                    DrawDebugDot(g, bx + bw, by + bh, Color.Red,  "board-BR");
+                    bool log = DebugLog.Enabled;
+                    DrawDebugDot(g, origin.X - vs.Left, origin.Y - vs.Top, Color.Cyan, "content-origin", log);
+                    DrawDebugDot(g, bx,      by,      Color.Red,  "board-TL", log);
+                    DrawDebugDot(g, bx + bw, by,      Color.Red,  "board-TR", log);
+                    DrawDebugDot(g, bx,      by + bh, Color.Red,  "board-BL", log);
+                    DrawDebugDot(g, bx + bw, by + bh, Color.Red,  "board-BR", log);
                 }
             }
 
@@ -260,6 +312,21 @@ namespace ChessistOverlay
 
             _isBlank = false;
             Blit(bmp, vs.Left, vs.Top);
+        }
+
+        // Enumerates all top-level windows to find a browser render widget.
+        // Used as fallback when the foreground window is not a browser (e.g. user alt-tabbed).
+        IntPtr FindAnyBrowserRenderWidget()
+        {
+            IntPtr found = IntPtr.Zero;
+            EnumWindows((hwnd, _) =>
+            {
+                if (!IsActualBrowser(hwnd)) return true;
+                IntPtr rw = FindRenderWidget(hwnd);
+                if (rw != IntPtr.Zero) { found = rw; return false; }
+                return true;
+            }, IntPtr.Zero);
+            return found;
         }
 
         // Walks all child windows looking for Chrome's render widget (the actual web viewport HWND).
@@ -293,16 +360,19 @@ namespace ChessistOverlay
             Blit(bmp, vs.Left, vs.Top);
         }
 
-        static void DrawDebugDot(Graphics g, float x, float y, Color color, string label)
+        static void DrawDebugDot(Graphics g, float x, float y, Color color, string label, bool writeToConsole = true)
         {
             const float R = 7f;
             using var brush = new SolidBrush(Color.FromArgb(220, color));
             using var pen   = new Pen(Color.Black, 1.5f);
             g.FillEllipse(brush, x - R, y - R, R*2, R*2);
             g.DrawEllipse(pen,   x - R, y - R, R*2, R*2);
-            Console.ForegroundColor = ConsoleColor.DarkYellow;
-            Console.WriteLine($"  [dot] {label,-20} bitmap=({x:F0},{y:F0})");
-            Console.ResetColor();
+            if (writeToConsole)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.WriteLine($"  [dot] {label,-20} bitmap=({x:F0},{y:F0})");
+                Console.ResetColor();
+            }
         }
 
 
@@ -471,6 +541,12 @@ namespace ChessistOverlay
             catch { ico = SystemIcons.Application; }
 
             var menu = new ContextMenuStrip();
+            menu.Items.Add("View Logs", null, (_, _) =>
+            {
+                try { Process.Start(new ProcessStartInfo(DebugLog.LogPath) { UseShellExecute = true }); }
+                catch { }
+            });
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit Chessist Overlay", null, (_, _) => Application.Exit());
 
             _icon = new NotifyIcon
@@ -493,6 +569,11 @@ namespace ChessistOverlay
     {
         public static bool Enabled { get; private set; }
 
+        public static readonly string LogPath = System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistOverlay.log");
+
+        static System.IO.StreamWriter? _writer;
+
         [DllImport("kernel32.dll")] static extern bool AllocConsole();
 
         public static void Init()
@@ -507,12 +588,37 @@ namespace ChessistOverlay
             Console.ResetColor();
         }
 
-        static int    _msgCount;
-        static int    _windowCount;
+        public static void OpenLogFile()
+        {
+            try
+            {
+                _writer = new System.IO.StreamWriter(LogPath, append: false) { AutoFlush = true };
+                _writer.WriteLine($"=== Chessist Overlay Log — {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+            }
+            catch { }
+        }
+
+        static void Log(string text, ConsoleColor conColor)
+        {
+            _writer?.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}]  {text}");
+            if (Enabled)
+            {
+                Console.ForegroundColor = conColor;
+                Console.WriteLine(text);
+                Console.ResetColor();
+            }
+        }
+
+        public static void Connect()    => Log("client connected",    ConsoleColor.Yellow);
+        public static void Disconnect() => Log("client disconnected", ConsoleColor.Red);
+
+        static int      _msgCount;
+        static int      _windowCount;
         static DateTime _window = DateTime.UtcNow;
 
         public static void Message(string type, int bytes, bool posOnly)
         {
+            if (!Enabled) return; // verbose — console/debug mode only
             _msgCount++;
             _windowCount++;
 
@@ -521,8 +627,8 @@ namespace ChessistOverlay
             double rate = 0;
             if (secs >= 1.0)
             {
-                rate     = _windowCount / secs;
-                _window  = now;
+                rate         = _windowCount / secs;
+                _window      = now;
                 _windowCount = 0;
             }
 
@@ -530,8 +636,6 @@ namespace ChessistOverlay
             {
                 "eval"         => ConsoleColor.Green,
                 "positionOnly" => ConsoleColor.DarkGray,
-                "disconnect"   => ConsoleColor.Red,
-                "connect"      => ConsoleColor.Yellow,
                 _              => ConsoleColor.White,
             };
             Console.ForegroundColor = color;
@@ -540,12 +644,17 @@ namespace ChessistOverlay
             Console.ResetColor();
         }
 
+        static DateTime _lastPosLog = DateTime.MinValue;
+
         public static void Position(int physX, int physY, int physW, int physH, int originX, int originY, double viewX, double viewY, double dpr)
         {
-            var vs = System.Windows.Forms.SystemInformation.VirtualScreen;
-            Console.ForegroundColor = ConsoleColor.DarkCyan;
-            Console.WriteLine($"                 board  phys=({physX},{physY} {physW}x{physH})  origin=({originX},{originY})  view=({viewX:F1},{viewY:F1})  dpr={dpr:F2}  vs=({vs.Left},{vs.Top})");
-            Console.ResetColor();
+            var now = DateTime.UtcNow;
+            bool throttle = (now - _lastPosLog).TotalSeconds >= 1.0;
+            if (!throttle && !Enabled) return;
+            if (throttle) _lastPosLog = now;
+
+            string text = $"board  phys=({physX},{physY} {physW}x{physH})  origin=({originX},{originY})  view=({viewX:F1},{viewY:F1})  dpr={dpr:F2}";
+            Log(text, ConsoleColor.DarkCyan);
         }
     }
 
@@ -574,6 +683,11 @@ namespace ChessistOverlay
 
                 if (ctx.Request.IsWebSocketRequest)
                     _ = HandleAsync(ctx, ct);
+                else if (ctx.Request.RawUrl == "/ping")
+                {
+                    ctx.Response.StatusCode = 200;
+                    ctx.Response.Close();
+                }
                 else
                     ctx.Response.Abort();
             }
@@ -585,7 +699,7 @@ namespace ChessistOverlay
             var ws    = wsCtx.WebSocket;
             var buf   = new byte[65536];
 
-            if (DebugLog.Enabled) DebugLog.Message("connect", 0, false);
+            DebugLog.Connect();
 
             try
             {
@@ -608,7 +722,7 @@ namespace ChessistOverlay
             catch { }
             finally
             {
-                if (DebugLog.Enabled) DebugLog.Message("disconnect", 0, false);
+                DebugLog.Disconnect();
                 _overlay.Apply(new WsMsg { Visible = false });
                 ws.Dispose();
             }
@@ -624,6 +738,7 @@ namespace ChessistOverlay
         {
             bool debug = Array.Exists(args, a => a.Equals("-debug", StringComparison.OrdinalIgnoreCase));
             if (debug) DebugLog.Init();
+            DebugLog.OpenLogFile();
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

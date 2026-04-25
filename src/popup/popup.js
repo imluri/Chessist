@@ -34,10 +34,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const colorWhiteBtn = document.getElementById('colorWhite');
   const colorBlackBtn = document.getElementById('colorBlack');
   const forceRestartBtn = document.getElementById('forceRestartBtn');
-  const overlayModeToggle = document.getElementById('overlayMode');
-  const overlayStatus     = document.getElementById('overlayStatus');
-  const overlayStatusIcon = document.getElementById('overlayStatusIcon');
-  const overlayStatusText = document.getElementById('overlayStatusText');
+  const overlayModeToggle      = document.getElementById('overlayMode');
+  const overlayStatus          = document.getElementById('overlayStatus');
+  const overlayStatusIcon      = document.getElementById('overlayStatusIcon');
+  const overlayStatusText      = document.getElementById('overlayStatusText');
+  const overlayDebugRow        = document.getElementById('overlayDebugRow');
+  const overlayDebugToggle     = document.getElementById('overlayDebug');
+  const manualMapRow           = document.getElementById('manualMapRow');
+  const manualMapToggle        = document.getElementById('manualMap');
+  const manualOffsetControls   = document.getElementById('manualOffsetControls');
+  const offsetXInput           = document.getElementById('offsetXInput');
+  const offsetYInput           = document.getElementById('offsetYInput');
 
   let currentEngineSource = 'wasm';
   let currentPlayerColor = 'auto'; // 'auto', 'w', or 'b'
@@ -117,6 +124,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.manualElo) manualEloInput.value = settings.manualElo;
   overlayModeToggle.checked = settings.overlayMode === true;
 
+  const mmLocal = await chrome.storage.local.get(['manualMap', 'manualOffsetX', 'manualOffsetY', 'overlayDebug']);
+  manualMapToggle.checked = mmLocal.manualMap === true;
+  offsetXInput.value = mmLocal.manualOffsetX ?? 0;
+  offsetYInput.value = mmLocal.manualOffsetY ?? 0;
+  overlayDebugToggle.checked = mmLocal.overlayDebug === true;
+
+  function _updateManualMapVisibility() {
+    const overlayOn = overlayModeToggle.checked;
+    const mapOn     = manualMapToggle.checked;
+    overlayDebugRow.classList.toggle('hidden', !overlayOn);
+    manualMapRow.classList.toggle('hidden', !overlayOn);
+    manualOffsetControls.classList.toggle('hidden', !overlayOn || !mapOn);
+  }
+  _updateManualMapVisibility();
+
   // Load game history + flags from local storage
   const localData = await chrome.storage.local.get(['gameHistory', 'shouldThrowNextGame', 'shouldWinNextGame', 'detectedElo']);
   renderGameHistory(localData.gameHistory || [], localData.shouldThrowNextGame === true, localData.shouldWinNextGame === true);
@@ -171,6 +193,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     notifyContentScripts({ type: 'SETTINGS_UPDATED', showAltArrows: showAltArrowsToggle.checked });
   });
 
+  // Overlay debug toggle — restart overlay exe with/without -debug flag
+  overlayDebugToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ overlayDebug: overlayDebugToggle.checked });
+    chrome.runtime.sendMessage({ type: 'RESTART_OVERLAY', debug: overlayDebugToggle.checked }).catch(() => {});
+  });
+
+  // Manual map toggle
+  manualMapToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ manualMap: manualMapToggle.checked });
+    _updateManualMapVisibility();
+    notifyContentScripts({ type: 'SETTINGS_UPDATED', manualMap: manualMapToggle.checked });
+  });
+
+  async function _saveAndSendOffsets() {
+    const x = parseInt(offsetXInput.value) || 0;
+    const y = parseInt(offsetYInput.value) || 0;
+    await chrome.storage.local.set({ manualOffsetX: x, manualOffsetY: y });
+    notifyContentScripts({ type: 'SETTINGS_UPDATED', manualOffsetX: x, manualOffsetY: y });
+  }
+
+  offsetXInput.addEventListener('change', _saveAndSendOffsets);
+  offsetYInput.addEventListener('change', _saveAndSendOffsets);
+
   // Overlay status polling
   let _overlayStatusInterval = null;
 
@@ -214,6 +259,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.sync.set({ overlayMode: overlayModeToggle.checked });
     notifyContentScripts({ type: 'SETTINGS_UPDATED', overlayMode: overlayModeToggle.checked });
     chrome.runtime.sendMessage({ type: 'SET_OVERLAY_MODE', enabled: overlayModeToggle.checked }).catch(() => {});
+    _updateManualMapVisibility();
     if (overlayModeToggle.checked) _startOverlayStatusPolling();
     else _stopOverlayStatusPolling();
   });

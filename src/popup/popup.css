@@ -300,6 +300,54 @@ input[type="range"]::-webkit-slider-thumb {
   color: #792A9E;
 }
 
+.sub-toggle-row {
+  margin-top: 6px;
+  padding-left: 12px;
+}
+
+.sub-toggle-row.hidden {
+  display: none;
+}
+
+.manual-offset-controls {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #2a2a2a;
+  border-radius: 6px;
+}
+
+.manual-offset-controls.hidden {
+  display: none;
+}
+
+.offset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+}
+
+.offset-label {
+  font-size: 11px;
+  color: #ccc;
+}
+
+.offset-input {
+  width: 70px;
+  background: #3a3a3a;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #eee;
+  font-size: 11px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.offset-input:focus {
+  outline: none;
+  border-color: #888;
+}
+
 .overlay-status {
   margin-top: 6px;
   padding: 6px 10px;

@@ -37,24 +37,26 @@ analysis_in_progress = False
 
 overlay_process = None  # subprocess handle for chessist_overlay.py
 OVERLAY_PORT = 27301
+OVERLAY_PING = f'http://127.0.0.1:{OVERLAY_PORT}/ping'
 
 
 def _overlay_alive():
-    import socket
     try:
-        with socket.create_connection(('127.0.0.1', OVERLAY_PORT), timeout=0.3):
-            return True
-    except OSError:
+        import urllib.request
+        urllib.request.urlopen(OVERLAY_PING, timeout=0.5)
+        return True
+    except Exception:
         return False
 
 
-def start_overlay():
+def start_overlay(debug=False):
     global overlay_process
-    if (overlay_process and overlay_process.poll() is None) or _overlay_alive():
-        return  # already running
+    if not debug and ((overlay_process and overlay_process.poll() is None) or _overlay_alive()):
+        return  # already running (skip check when restarting in debug mode)
     try:
         host_dir = os.path.dirname(os.path.abspath(__file__))
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        # No CREATE_NO_WINDOW in debug mode so the console is visible
+        flags = 0 if debug else getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
         root   = os.path.dirname(host_dir)
         cs_exe = os.path.join(root, 'overlay', 'bin', 'Release', 'net48', 'ChessistOverlay.exe')
@@ -63,7 +65,8 @@ def start_overlay():
             send_message({"type": "debug", "message": f"Overlay exe not found: {cs_exe}. Run setup.bat to build it."})
             return
 
-        overlay_process = subprocess.Popen([cs_exe], creationflags=flags)
+        cmd = [cs_exe, '-debug'] if debug else [cs_exe]
+        overlay_process = subprocess.Popen(cmd, creationflags=flags)
     except Exception as e:
         send_message({"type": "debug", "message": f"Overlay start failed: {e}"})
 
@@ -448,7 +451,7 @@ def run_message_loop():
                         send_message({"type": "error", "message": f"Failed to set option: {str(e)}"})
 
             elif msg_type == "start_overlay":
-                start_overlay()
+                start_overlay(debug=message.get("debug", False))
 
             elif msg_type == "stop_overlay":
                 stop_overlay()
