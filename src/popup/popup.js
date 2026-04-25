@@ -3,6 +3,10 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const enableToggle = document.getElementById('enableToggle');
   const showBestMove = document.getElementById('showBestMove');
+  const showOpponentBestMoveToggle = document.getElementById('showOpponentBestMove');
+  const showOpponentBestMoveRow = document.getElementById('showOpponentBestMoveToggle');
+  const showAltArrowsToggle = document.getElementById('showAltArrows');
+  const showAltArrowsRow = document.getElementById('showAltArrowsToggle');
   const showMoveIconToggle = document.getElementById('showMoveIcon');
   const engineDepth = document.getElementById('engineDepth');
   const depthValue = document.getElementById('depthValue');
@@ -30,6 +34,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const colorWhiteBtn = document.getElementById('colorWhite');
   const colorBlackBtn = document.getElementById('colorBlack');
   const forceRestartBtn = document.getElementById('forceRestartBtn');
+  const overlayModeToggle = document.getElementById('overlayMode');
+  const overlayStatus     = document.getElementById('overlayStatus');
+  const overlayStatusIcon = document.getElementById('overlayStatusIcon');
+  const overlayStatusText = document.getElementById('overlayStatusText');
 
   let currentEngineSource = 'wasm';
   let currentPlayerColor = 'auto'; // 'auto', 'w', or 'b'
@@ -59,10 +67,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load current settings
   const settings = await chrome.storage.sync.get([
-    'enabled', 'showBestMove', 'showMoveIcon', 'autoMove', 'instantMove', 'smartTiming', 'autoRematch', 'autoNewGame',
+    'enabled', 'showBestMove', 'showOpponentBestMove', 'showAltArrows', 'showMoveIcon', 'autoMove', 'instantMove', 'smartTiming', 'autoRematch', 'autoNewGame',
     'stealthMode', 'engineDepth', 'engineSource', 'playerColor', 'autoMoveDelayMin', 'autoMoveDelayMax', 'skillLevel',
     'targetAccuracy', 'wlBalance', 'maxConsecutiveWins', 'maxConsecutiveLosses',
-    'throwRandom', 'lossRandom', 'matchElo', 'manualElo'
+    'throwRandom', 'lossRandom', 'matchElo', 'manualElo', 'overlayMode'
   ]);
   let isEnabled = settings.enabled !== false;
   if (isEnabled) {
@@ -73,6 +81,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     enableToggle.textContent = 'Disabled';
   }
   showBestMove.checked = settings.showBestMove === true;
+  showOpponentBestMoveToggle.checked = settings.showOpponentBestMove === true;
+  showAltArrowsToggle.checked = settings.showAltArrows !== false;
+  showOpponentBestMoveRow.classList.toggle('hidden', !showBestMove.checked);
+  showAltArrowsRow.classList.toggle('hidden', !showBestMove.checked);
   showMoveIconToggle.checked = settings.showMoveIcon === true;
   autoMoveToggle.checked = settings.autoMove === true;
   autoRematchToggle.checked = settings.autoRematch === true;
@@ -103,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   matchEloToggle.checked = settings.matchElo === true;
   if (settings.manualElo) manualEloInput.value = settings.manualElo;
+  overlayModeToggle.checked = settings.overlayMode === true;
 
   // Load game history + flags from local storage
   const localData = await chrome.storage.local.get(['gameHistory', 'shouldThrowNextGame', 'shouldWinNextGame', 'detectedElo']);
@@ -142,6 +155,67 @@ document.addEventListener('DOMContentLoaded', async () => {
   showBestMove.addEventListener('change', async () => {
     await chrome.storage.sync.set({ showBestMove: showBestMove.checked });
     notifyContentScripts({ type: 'SETTINGS_UPDATED', showBestMove: showBestMove.checked });
+    showOpponentBestMoveRow.classList.toggle('hidden', !showBestMove.checked);
+    showAltArrowsRow.classList.toggle('hidden', !showBestMove.checked);
+  });
+
+  // Toggle opponent best move
+  showOpponentBestMoveToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ showOpponentBestMove: showOpponentBestMoveToggle.checked });
+    notifyContentScripts({ type: 'SETTINGS_UPDATED', showOpponentBestMove: showOpponentBestMoveToggle.checked });
+  });
+
+  // Toggle alternative arrows (yellow/red)
+  showAltArrowsToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ showAltArrows: showAltArrowsToggle.checked });
+    notifyContentScripts({ type: 'SETTINGS_UPDATED', showAltArrows: showAltArrowsToggle.checked });
+  });
+
+  // Overlay status polling
+  let _overlayStatusInterval = null;
+
+  async function _pollOverlayStatus() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) return;
+      const res = await chrome.tabs.sendMessage(tab.id, { type: 'GET_OVERLAY_WS_STATUS' });
+      if (res?.connected) {
+        overlayStatus.classList.add('connected');
+        overlayStatusIcon.textContent = '✓';
+        overlayStatusText.textContent = 'Overlay connected';
+      } else {
+        overlayStatus.classList.remove('connected');
+        overlayStatusIcon.textContent = '●';
+        overlayStatusText.textContent = 'Connecting to overlay...';
+      }
+    } catch (e) {
+      overlayStatus.classList.remove('connected');
+      overlayStatusIcon.textContent = '●';
+      overlayStatusText.textContent = 'Connecting to overlay...';
+    }
+  }
+
+  function _startOverlayStatusPolling() {
+    overlayStatus.classList.remove('hidden');
+    _pollOverlayStatus();
+    _overlayStatusInterval = setInterval(_pollOverlayStatus, 1000);
+  }
+
+  function _stopOverlayStatusPolling() {
+    clearInterval(_overlayStatusInterval);
+    _overlayStatusInterval = null;
+    overlayStatus.classList.add('hidden');
+  }
+
+  if (overlayModeToggle.checked) _startOverlayStatusPolling();
+
+  // Toggle overlay mode
+  overlayModeToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ overlayMode: overlayModeToggle.checked });
+    notifyContentScripts({ type: 'SETTINGS_UPDATED', overlayMode: overlayModeToggle.checked });
+    chrome.runtime.sendMessage({ type: 'SET_OVERLAY_MODE', enabled: overlayModeToggle.checked }).catch(() => {});
+    if (overlayModeToggle.checked) _startOverlayStatusPolling();
+    else _stopOverlayStatusPolling();
   });
 
   // Toggle move icon

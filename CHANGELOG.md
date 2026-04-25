@@ -1,6 +1,21 @@
 # Changelog
 
-## v1.1.0
+## v1.2.0 — Overlay update
+
+### Added
+- **Native overlay window** — transparent C# WinForms window drawn over the browser using `UpdateLayeredWindow` with premultiplied alpha; invisible to screen capture (`SetWindowDisplayAffinity`)
+- **Pixel-accurate positioning** — overlay uses `EnumChildWindows` to find `Chrome_RenderWidgetHostHWND` and `ClientToScreen` to get the exact web content origin, bypassing Chrome's unreliable JS screen coordinate APIs
+- **Drag tracking** — 16ms timer re-polls `ClientToScreen` so the overlay follows the browser window in real time
+- **Maximize sync** — `ResizeObserver` on the board element fires post-reflow so overlay resizes correctly after maximize/restore
+- **Focus sync** — overlay hides on `window.blur` and reappears on `window.focus`; Electron apps (VS Code, Discord) are excluded via process-name check
+- **Settings sync** — overlay respects Show Best Move, Show Opponent's Best Move, Show Alternative Arrows, and Target Depth; arrows are only drawn when analysis reaches target depth
+- **Show Opponent's Best Move** toggle — best-move arrow stays visible during the opponent's turn; appears as a sub-option under Show Best Move
+- **Overlay status indicator** — live dot in the popup shows whether the overlay is connected or still connecting, polling every second
+
+
+---
+
+## v1.1.0 - Lichess update
 
 ### Added
 - **Lichess support** — full eval bar, best-move arrows, move classification icons, auto-move, accuracy tracking, W/L balance, auto-rematch, and all other features now work on lichess.org in addition to Chess.com

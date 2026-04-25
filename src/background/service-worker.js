@@ -309,6 +309,15 @@ chrome.storage.sync.get(['engineSource']).then(result => {
   }
 });
 
+// Content scripts open a persistent port to keep the service worker alive.
+// When a tab connects, ensure the native engine is running immediately.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'content-alive') return;
+  if (engineSource === 'native' && !nativePort) {
+    connectNative();
+  }
+});
+
 // Connect to native Stockfish host
 function connectNative() {
   if (nativePort) {
@@ -439,6 +448,9 @@ function handleNativeMessage(message) {
     nativePath = message.path;
     reconnectAttempts = 0; // Reset on successful connection
     console.log('Chessist SW: Native Stockfish started:', message.path);
+    chrome.storage.sync.get(['overlayMode']).then(s => {
+      if (s.overlayMode) sendToNativePort({ type: 'start_overlay' });
+    });
   }
   else if (message.type === 'ready') {
     console.log('Chessist SW: Native Stockfish ready');
@@ -724,6 +736,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         evaluation: lastEvaluation
       });
     }
+  }
+
+  if (message.type === 'SET_OVERLAY_MODE') {
+    if (nativePort && nativeConnected) {
+      sendToNativePort({ type: message.enabled ? 'start_overlay' : 'stop_overlay' });
+    }
+    return;
   }
 
   if (message.type === 'SET_ENGINE_SOURCE') {

@@ -35,6 +35,48 @@ stop_requested = False
 engine_ready = False
 analysis_in_progress = False
 
+overlay_process = None  # subprocess handle for chessist_overlay.py
+OVERLAY_PORT = 27301
+
+
+def _overlay_alive():
+    import socket
+    try:
+        with socket.create_connection(('127.0.0.1', OVERLAY_PORT), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def start_overlay():
+    global overlay_process
+    if (overlay_process and overlay_process.poll() is None) or _overlay_alive():
+        return  # already running
+    try:
+        host_dir = os.path.dirname(os.path.abspath(__file__))
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+        root   = os.path.dirname(host_dir)
+        cs_exe = os.path.join(root, 'overlay', 'bin', 'Release', 'net48', 'ChessistOverlay.exe')
+
+        if not os.path.isfile(cs_exe):
+            send_message({"type": "debug", "message": f"Overlay exe not found: {cs_exe}. Run setup.bat to build it."})
+            return
+
+        overlay_process = subprocess.Popen([cs_exe], creationflags=flags)
+    except Exception as e:
+        send_message({"type": "debug", "message": f"Overlay start failed: {e}"})
+
+
+def stop_overlay():
+    global overlay_process
+    if overlay_process and overlay_process.poll() is None:
+        try:
+            overlay_process.terminate()
+        except Exception:
+            pass
+    overlay_process = None
+
 
 def find_stockfish():
     """Find Stockfish executable on the system."""
@@ -346,25 +388,9 @@ def parse_info(line):
     return data if ("cp" in data or "mate" in data) else None
 
 
-def main():
-    global stockfish_path, stop_requested, analysis_in_progress
+def run_message_loop():
+    global stop_requested, analysis_in_progress
 
-    # Find Stockfish
-    stockfish_path = find_stockfish()
-
-    if not stockfish_path:
-        send_message({
-            "type": "error",
-            "message": "Stockfish not found. Install Stockfish and add to PATH or set STOCKFISH_PATH."
-        })
-        return
-
-    send_message({"type": "started", "path": stockfish_path})
-
-    # Start Stockfish immediately
-    start_stockfish()
-
-    # Main message loop
     while True:
         try:
             message = read_message()
@@ -387,14 +413,12 @@ def main():
                         stockfish_process.stdin.write("stop\n")
                         stockfish_process.stdin.flush()
                     except (OSError, BrokenPipeError, IOError):
-                        # Process already dead, restart it
                         kill_stockfish()
                         start_stockfish()
                     except Exception:
                         pass
 
             elif msg_type == "reset":
-                # Full reset - send ucinewgame to clear hash table
                 stop_requested = True
                 analysis_in_progress = False
                 if stockfish_process and stockfish_process.poll() is None:
@@ -405,7 +429,6 @@ def main():
                         stockfish_process.stdin.flush()
                         send_message({"type": "debug", "message": "Engine reset (ucinewgame)"})
                     except Exception:
-                        # If pipe fails, do a full restart
                         kill_stockfish()
                         start_stockfish()
                         send_message({"type": "debug", "message": "Engine reset (restarted)"})
@@ -414,7 +437,6 @@ def main():
                     send_message({"type": "debug", "message": "Engine reset (restarted)"})
 
             elif msg_type == "set_option":
-                # Set UCI option (e.g., Skill Level)
                 name = message.get("name")
                 value = message.get("value")
                 if name and value is not None and stockfish_process and stockfish_process.poll() is None:
@@ -425,14 +447,37 @@ def main():
                     except Exception as e:
                         send_message({"type": "error", "message": f"Failed to set option: {str(e)}"})
 
+            elif msg_type == "start_overlay":
+                start_overlay()
+
+            elif msg_type == "stop_overlay":
+                stop_overlay()
+
             elif msg_type == "quit":
                 break
 
         except Exception as e:
             send_message({"type": "error", "message": str(e)})
 
-    # Cleanup
     kill_stockfish()
+    stop_overlay()
+
+
+def main():
+    global stockfish_path
+
+    stockfish_path = find_stockfish()
+
+    if not stockfish_path:
+        send_message({
+            "type": "error",
+            "message": "Stockfish not found. Install Stockfish and add to PATH or set STOCKFISH_PATH."
+        })
+        return
+
+    send_message({"type": "started", "path": stockfish_path})
+    start_stockfish()
+    run_message_loop()
 
 
 if __name__ == "__main__":

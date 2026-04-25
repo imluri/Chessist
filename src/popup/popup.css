@@ -4,6 +4,10 @@
   box-sizing: border-box;
 }
 
+.hidden {
+  display: none !important;
+}
+
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   background: #1a1a1a;
@@ -40,6 +44,15 @@ body::-webkit-scrollbar-thumb:hover {
 .header {
   text-align: center;
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.header-logo {
+  width: 28px;
+  height: 28px;
 }
 
 .header h1 {
@@ -51,6 +64,16 @@ body::-webkit-scrollbar-thumb:hover {
 .toggle-section {
   margin-bottom: 12px;
 }
+
+/* Overlay mode toggle at the top */
+.overlay-toggle {
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
 
 /* Full-width enable/disable button */
 .enable-btn {
@@ -277,6 +300,35 @@ input[type="range"]::-webkit-slider-thumb {
   color: #792A9E;
 }
 
+.overlay-status {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #aaa;
+}
+
+.overlay-status.connected {
+  color: #4caf50;
+}
+
+.overlay-status.hidden {
+  display: none;
+}
+
+@keyframes overlay-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+.overlay-status:not(.connected) #overlayStatusIcon {
+  animation: overlay-pulse 1.2s ease-in-out infinite;
+}
+
 .native-status {
   margin-top: 10px;
   padding: 8px 10px;
@@ -311,6 +363,25 @@ input[type="range"]::-webkit-slider-thumb {
 
 .native-help.hidden {
   display: none;
+}
+
+.setup-title {
+  font-weight: 600;
+  color: #ccc;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.setup-steps {
+  margin-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-steps li {
+  line-height: 1.5;
+  color: #bbb;
 }
 
 .native-help p {

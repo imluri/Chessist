@@ -5,6 +5,7 @@
   'use strict';
 
   let evalBar = null;
+  let evalBarContainer = null; // #board-layout-evaluation (chess.com native wrapper)
   let evalBarFill = null;
   let evalScore = null;
   let bestMoveEl = null;
@@ -17,6 +18,8 @@
   let playerColor = null; // Track player's color (for perspective)
   let isEnabled = true;
   let showBestMove = false;
+  let showOpponentBestMove = false;
+  let showAltArrows = true;
   let showMoveIcon = false;
   let autoMove = false;
   let lastAutoMovePosition = null;  // Track position+turn where we last auto-moved to avoid duplicate moves
@@ -49,6 +52,7 @@
   let accuracyEvalPending = false;  // Waiting for post-move eval to calculate accuracy
   const ACCURACY_EVAL_DEPTH = 10;   // Minimum depth for accuracy calculation
 
+  let overlayMode = false; // Send eval data to native overlay window
   let targetDepth = 18; // Default depth
   let stealthMode = false; // Disable console logging when true
   let instantMove = false; // Make moves instantly without delay
@@ -83,13 +87,15 @@
   async function loadSettings() {
     try {
       const result = await chrome.storage.sync.get([
-        'enabled', 'showBestMove', 'showMoveIcon', 'autoMove', 'instantMove', 'smartTiming', 'autoRematch', 'autoNewGame',
+        'enabled', 'showBestMove', 'showOpponentBestMove', 'showAltArrows', 'showMoveIcon', 'autoMove', 'instantMove', 'smartTiming', 'autoRematch', 'autoNewGame',
         'stealthMode', 'engineDepth', 'playerColor', 'autoMoveDelayMin', 'autoMoveDelayMax', 'skillLevel',
         'targetAccuracy', 'wlBalance', 'maxConsecutiveWins', 'maxConsecutiveLosses', 'throwRandom',
-        'lossRandom', 'matchElo', 'manualElo'
+        'lossRandom', 'matchElo', 'manualElo', 'overlayMode'
       ]);
       isEnabled = result.enabled !== false; // Default true
       showBestMove = result.showBestMove === true; // Default false
+      showOpponentBestMove = result.showOpponentBestMove === true; // Default false
+      showAltArrows = result.showAltArrows !== false; // Default true
       showMoveIcon = result.showMoveIcon === true; // Default false
       autoMove = result.autoMove === true; // Default false
       instantMove = result.instantMove === true; // Default false
@@ -110,6 +116,14 @@
       lossRandom = result.lossRandom === true;
       matchElo = result.matchElo === true;
       manualElo = result.manualElo ?? null;
+      overlayMode = result.overlayMode === true;
+      if (overlayMode) {
+        _connectOverlayWs();
+        if (evalBar) evalBar.style.display = 'none';
+        if (evalBarContainer) evalBarContainer.style.display = 'none';
+        clearArrow();
+        clearMoveIcon();
+      }
 
       // Load throw/win state from local storage
       const local = await chrome.storage.local.get(['shouldThrowNextGame', 'shouldWinNextGame']);
@@ -278,13 +292,15 @@
     const alts = (multiPvMoves || []).filter(m => m && m.length >= 4);
 
     // Draw alternatives first (behind best move)
-    if (alts[2]) {
-      drawArrow(group, alts[2].substring(0, 2), alts[2].substring(2, 4),
-                isFlipped, '#e05050', '0.45', 1.6);
-    }
-    if (alts[1]) {
-      drawArrow(group, alts[1].substring(0, 2), alts[1].substring(2, 4),
-                isFlipped, '#e0b840', '0.55', 1.8);
+    if (showAltArrows) {
+      if (alts[2]) {
+        drawArrow(group, alts[2].substring(0, 2), alts[2].substring(2, 4),
+                  isFlipped, '#e05050', '0.45', 1.6);
+      }
+      if (alts[1]) {
+        drawArrow(group, alts[1].substring(0, 2), alts[1].substring(2, 4),
+                  isFlipped, '#e0b840', '0.55', 1.8);
+      }
     }
     // Best move on top
     drawArrow(group, move.substring(0, 2), move.substring(2, 4),
@@ -319,7 +335,7 @@
     const existing = svg.querySelector('.move-icon-group');
     if (existing) existing.remove();
 
-    if (!showMoveIcon) return;
+    if (!showMoveIcon || overlayMode) return;
 
     const { file, rank } = squareToIndices(toSquare);
     const squareSize = 12.5;
@@ -1242,8 +1258,13 @@
     // Poll every second — game-over modal appears after the final move
     checkInterval = setInterval(checkResult, 1000);
 
-    // Also watch DOM for the modal appearing
-    const observer = new MutationObserver(checkResult);
+    // Watch DOM for the modal — throttled so rapid Chess.com DOM churn doesn't run checkResult constantly
+    let _gorPending = false;
+    const observer = new MutationObserver(() => {
+      if (_gorPending) return;
+      _gorPending = true;
+      setTimeout(() => { _gorPending = false; checkResult(); }, 500);
+    });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
@@ -1346,8 +1367,8 @@
     if (nativeEvalContainer && nativeEvalInner) {
       log('Chessist: Using native Chess.com eval container');
 
-      // Make container visible and style it
-      nativeEvalContainer.style.display = 'block';
+      evalBarContainer = nativeEvalContainer;
+      if (!overlayMode) nativeEvalContainer.style.display = 'block';
 
       // Clear any existing content and use as our eval bar
       nativeEvalInner.innerHTML = '';
@@ -1398,6 +1419,10 @@
       evalBar.appendChild(turnIndicatorEl);
       evalBar.appendChild(accuracyEl);
 
+      if (overlayMode) {
+        evalBar.style.display = 'none';
+        nativeEvalContainer.style.display = 'none';
+      }
       return;
     }
 
@@ -1485,6 +1510,10 @@
     }
     insertParent.insertBefore(evalBar, board);
 
+    if (overlayMode) {
+      evalBar.style.display = 'none';
+    }
+
     // Observe board size changes
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -1495,6 +1524,142 @@
       }
     });
     resizeObserver.observe(boardElement);
+  }
+
+  // ── Service worker keepalive (prevents SW sleep → native port drop) ─────────
+  (function _keepSwAlive() {
+    let _swPort = null;
+    function connect() {
+      try {
+        _swPort = chrome.runtime.connect({ name: 'content-alive' });
+        _swPort.onDisconnect.addListener(() => { void chrome.runtime.lastError; _swPort = null; setTimeout(connect, 1000); });
+      } catch (e) {}
+    }
+    connect();
+  })();
+
+  // ── Overlay WebSocket (direct, low-latency) ─────────────────────────────────
+  let _overlayWs = null;
+  let _overlayReconnectTimer = null;
+  let _boardObserver = null;
+  let _observedBoard = null;
+
+  function _connectOverlayWs() {
+    if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
+    try {
+      _overlayWs = new WebSocket('ws://127.0.0.1:27301');
+      _overlayWs.onopen  = () => {
+        clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
+        sendPositionUpdate(); // sync position immediately on connect
+      };
+      _overlayWs.onclose = () => {
+        _overlayWs = null;
+        if (overlayMode) _overlayReconnectTimer = setTimeout(_connectOverlayWs, 3000);
+      };
+      _overlayWs.onerror = () => {}; // onclose fires next
+    } catch (e) {}
+  }
+
+  function _disconnectOverlayWs() {
+    clearTimeout(_overlayReconnectTimer);
+    _overlayReconnectTimer = null;
+    if (_overlayWs) { try { _overlayWs.close(); } catch (e) {} _overlayWs = null; }
+  }
+
+  function sendPositionUpdate() {
+    if (!overlayMode || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
+    const board = findBoard();
+    if (!board) return;
+    if (board !== _observedBoard) {
+      if (_boardObserver) _boardObserver.disconnect();
+      _boardObserver = new ResizeObserver(sendPositionUpdate);
+      _boardObserver.observe(board);
+      _observedBoard = board;
+    }
+    const rect = board.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    try {
+      _overlayWs.send(JSON.stringify({
+        positionOnly: true,
+        visible: true,
+        viewX: rect.left, viewY: rect.top,
+        width: rect.width, height: rect.height,
+        dpr,
+      }));
+    } catch (e) {}
+  }
+
+  // Re-register zoom watcher so it fires once per zoom change and re-arms itself
+  function _watchZoom() {
+    const mq = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    mq.addEventListener('change', () => { sendPositionUpdate(); _watchZoom(); }, { once: true });
+  }
+
+  // Track browser window position (no native event — poll screenX/Y)
+  let _lastScreenX = window.screenX;
+  let _lastScreenY = window.screenY;
+  setInterval(() => {
+    if (window.screenX !== _lastScreenX || window.screenY !== _lastScreenY) {
+      _lastScreenX = window.screenX;
+      _lastScreenY = window.screenY;
+      sendPositionUpdate();
+    }
+  }, 250);
+  window.addEventListener('resize', sendPositionUpdate);
+  window.addEventListener('scroll', sendPositionUpdate, { passive: true });
+  document.addEventListener('fullscreenchange', sendPositionUpdate);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', sendPositionUpdate);
+    window.visualViewport.addEventListener('scroll', sendPositionUpdate);
+  }
+  _watchZoom();
+
+  // Tab/window focus: JS tells C# directly — no HWND guessing needed.
+  window.addEventListener('focus', () => { if (overlayMode) sendPositionUpdate(); });
+  window.addEventListener('blur',  () => {
+    if (!overlayMode || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
+    try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+  });
+
+  function sendOverlayUpdate(fillPercent, displayScore, isFlipped, evaluation) {
+    if (!overlayMode) return;
+    if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) {
+      _connectOverlayWs();
+      return;
+    }
+    const board = findBoard();
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+
+    // Mirror the same show/hide rules as the HTML overlay.
+    // Arrow[0] = purple (best move). Arrow[1,2] = yellow/red (alternatives).
+    // Alternatives are only sent when the best move is also shown, so C# index→color stays correct.
+    const isPlayerTurn = !playerColor || currentTurn === playerColor;
+    const showBest = isPlayerTurn ? showBestMove : showOpponentBestMove;
+    const atDepth  = evaluation.depth >= targetDepth;
+    const arrows   = [];
+    if (showBest && atDepth) {
+      const alts = (evaluation.multiPvMoves || []).filter(m => m && m.length >= 4);
+      if (alts.length > 0)
+        arrows.push({ from: alts[0].substring(0, 2), to: alts[0].substring(2, 4) });
+      if (showAltArrows) {
+        for (let i = 1; i < Math.min(3, alts.length); i++)
+          arrows.push({ from: alts[i].substring(0, 2), to: alts[i].substring(2, 4) });
+      }
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    try {
+      _overlayWs.send(JSON.stringify({
+        visible: true,
+        flipped: isFlipped,
+        viewX: rect.left, viewY: rect.top,
+        width: rect.width, height: rect.height,
+        dpr,
+        evalBar: { fillPercent, isFlipped, score: displayScore },
+        arrows,
+      }));
+    } catch (e) {}
   }
 
   // Update evaluation display
@@ -1603,61 +1768,62 @@
       fillPercent = 50 + (clampedPawns / 10) * 50;
     }
 
-    // Update bar fill (use setProperty for higher priority over CSS)
-    evalBarFill.style.setProperty('height', `${fillPercent}%`, 'important');
+    sendOverlayUpdate(fillPercent, displayScore, viewFromBlack, evaluation);
 
-    // Flip bar colors when playing as black (so player's color is at bottom)
-    if (evalBar) {
-      evalBar.classList.toggle('flipped', viewFromBlack);
-    }
+    if (!overlayMode) {
+      // Update bar fill (use setProperty for higher priority over CSS)
+      evalBarFill.style.setProperty('height', `${fillPercent}%`, 'important');
 
-    // Update score display
-    evalScore.textContent = displayScore;
-    evalScore.className = `chess-live-eval-score ${scoreClass}`;
-
-    // Update best move if enabled
-    if (evaluation.bestMove) {
-      // Format UCI move (e.g., "e2e4" -> "e2→e4", "e7e8q" -> "e7→e8=Q")
-      const move = evaluation.bestMove;
-      let formattedMove = move;
-      if (move.length >= 4) {
-        const from = move.substring(0, 2);
-        const to = move.substring(2, 4);
-        const promotion = move.length > 4 ? '=' + move[4].toUpperCase() : '';
-        formattedMove = `${from}→${to}${promotion}`;
+      // Flip bar colors when playing as black (so player's color is at bottom)
+      if (evalBar) {
+        evalBar.classList.toggle('flipped', viewFromBlack);
       }
 
-      // Log best move to console only at target depth
-      if (evaluation.depth >= targetDepth) {
-        log(`Best move: ${formattedMove} (depth ${evaluation.depth}, eval: ${displayScore})`);
-      }
+      // Update score display
+      evalScore.textContent = displayScore;
+      evalScore.className = `chess-live-eval-score ${scoreClass}`;
 
-      if (showBestMove && bestMoveEl) {
-        bestMoveEl.textContent = formattedMove;
-        bestMoveEl.style.display = 'block';
+      // Update best move if enabled
+      if (evaluation.bestMove) {
+        // Format UCI move (e.g., "e2e4" -> "e2→e4", "e7e8q" -> "e7→e8=Q")
+        const move = evaluation.bestMove;
+        let formattedMove = move;
+        if (move.length >= 4) {
+          const from = move.substring(0, 2);
+          const to = move.substring(2, 4);
+          const promotion = move.length > 4 ? '=' + move[4].toUpperCase() : '';
+          formattedMove = `${from}→${to}${promotion}`;
+        }
 
-        // Only draw arrow on player's turn (or always in spectating mode)
-        const isPlayerTurn = !playerColor || currentTurn === playerColor;
+        // Log best move to console only at target depth
+        if (evaluation.depth >= targetDepth) {
+          log(`Best move: ${formattedMove} (depth ${evaluation.depth}, eval: ${displayScore})`);
+        }
 
-        // Draw arrow on board only at target depth to avoid flickering
-        if (evaluation.depth >= targetDepth && isPlayerTurn) {
-          drawBestMoveArrow(move, evaluation.multiPvMoves);
-        } else if (!isPlayerTurn) {
-          // Clear arrow when it's opponent's turn
-          clearArrow();
+        if (showBestMove && bestMoveEl) {
+          bestMoveEl.textContent = formattedMove;
+          bestMoveEl.style.display = 'block';
+
+          const isPlayerTurn = !playerColor || currentTurn === playerColor;
+          const shouldDrawArrow = isPlayerTurn || showOpponentBestMove;
+          if (evaluation.depth >= targetDepth && shouldDrawArrow) {
+            drawBestMoveArrow(move, evaluation.multiPvMoves);
+          } else if (!shouldDrawArrow) {
+            clearArrow();
+          }
         }
       }
-    }
-    if (!showBestMove) {
-      if (bestMoveEl) {
-        bestMoveEl.style.display = 'none';
+      if (!showBestMove) {
+        if (bestMoveEl) {
+          bestMoveEl.style.display = 'none';
+        }
+        clearArrow();
       }
-      clearArrow();
-    }
 
-    // Update depth indicator (always show current depth)
-    if (depthEl && evaluation.depth) {
-      depthEl.textContent = `D${evaluation.depth}`;
+      // Update depth indicator (always show current depth)
+      if (depthEl && evaluation.depth) {
+        depthEl.textContent = `D${evaluation.depth}`;
+      }
     }
 
     // Auto-move feature: execute the best move automatically
@@ -2077,10 +2243,8 @@
       attributeFilter: ['class', 'style', 'transform']
     });
 
-    // Method 2: Poll for changes (Chess.com uses transforms/animations)
-    setInterval(() => {
-      checkForPositionChange(false); // Not from mouse release
-    }, 500);
+    // Fallback poll — safety net only; MutationObserver + events handle the common cases
+    setInterval(() => checkForPositionChange(false), 2000);
 
     // Method 3: Listen for mouse release on board (PRIMARY - most accurate)
     board.addEventListener('mouseup', () => {
@@ -2447,9 +2611,8 @@
       try {
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
-          if (evalBar) {
-            evalBar.style.display = isEnabled ? 'block' : 'none';
-          }
+          if (evalBar) evalBar.style.display = (isEnabled && !overlayMode) ? 'block' : 'none';
+          if (evalBarContainer) evalBarContainer.style.display = (isEnabled && !overlayMode) ? 'block' : 'none';
         } else if (message.type === 'SETTINGS_UPDATED') {
           // Update showBestMove if provided
           if (message.showBestMove !== undefined) {
@@ -2457,10 +2620,15 @@
             if (bestMoveEl) {
               bestMoveEl.style.display = showBestMove ? 'block' : 'none';
             }
-            // Clear arrow when best move display is disabled
-            if (!showBestMove) {
-              clearArrow();
-            }
+            if (!showBestMove) clearArrow();
+          }
+          if (message.showOpponentBestMove !== undefined) {
+            showOpponentBestMove = message.showOpponentBestMove;
+            if (!showOpponentBestMove) clearArrow();
+          }
+          if (message.showAltArrows !== undefined) {
+            showAltArrows = message.showAltArrows;
+            clearArrow();
           }
           if (message.showMoveIcon !== undefined) {
             showMoveIcon = message.showMoveIcon;
@@ -2552,6 +2720,13 @@
             }
           }
           if (message.manualElo !== undefined) manualElo = message.manualElo;
+          if (message.overlayMode !== undefined) {
+            overlayMode = message.overlayMode;
+            if (evalBar) evalBar.style.display = overlayMode ? 'none' : '';
+            if (evalBarContainer) evalBarContainer.style.display = overlayMode ? 'none' : 'block';
+            if (overlayMode) { clearArrow(); clearMoveIcon(); _connectOverlayWs(); }
+            else _disconnectOverlayWs();
+          }
         } else if (message.type === 'RE_EVALUATE') {
           // Engine switched - trigger re-evaluation of current position
           if (currentFen && isEnabled) {
@@ -2559,6 +2734,9 @@
             evalBar?.classList.add('loading');
             requestEval(currentFen);
           }
+        } else if (message.type === 'GET_OVERLAY_WS_STATUS') {
+          sendResponse({ connected: !!(_overlayWs && _overlayWs.readyState === WebSocket.OPEN) });
+          return true;
         }
       } catch (e) {
         if (e.message?.includes('Extension context invalidated')) {

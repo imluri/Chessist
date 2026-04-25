@@ -9,6 +9,7 @@
 <body>
   <div class="popup-container">
     <div class="header">
+      <img src="../../icons/icon48.png" class="header-logo" alt="Chessist">
       <h1>Chessist</h1>
     </div>
 
@@ -19,6 +20,17 @@
     </div>
 
     <button type="button" id="enableToggle" class="enable-btn active">Enabled</button>
+
+    <label class="toggle overlay-toggle" id="overlayModeToggle">
+      <input type="checkbox" id="overlayMode">
+      <span class="slider"></span>
+      <span class="label">Overlay Mode <span class="tooltip" data-tip="Hides browser UI — shows eval and arrows in a transparent native window instead">?</span></span>
+    </label>
+
+    <div id="overlayStatus" class="overlay-status hidden">
+      <span id="overlayStatusIcon"></span>
+      <span id="overlayStatusText"></span>
+    </div>
 
     <div class="divider"></div>
 
@@ -57,6 +69,16 @@
         <input type="checkbox" id="showBestMove">
         <span class="slider"></span>
         <span class="label">Show Best Move</span>
+      </label>
+      <label class="toggle sub-toggle" id="showOpponentBestMoveToggle">
+        <input type="checkbox" id="showOpponentBestMove">
+        <span class="slider"></span>
+        <span class="label">Show Opponent's Best Move</span>
+      </label>
+      <label class="toggle sub-toggle" id="showAltArrowsToggle">
+        <input type="checkbox" id="showAltArrows" checked>
+        <span class="slider"></span>
+        <span class="label">Show Alternative Arrows</span>
       </label>
 
       <label class="toggle">
@@ -188,16 +210,26 @@
       </div>
 
       <div id="nativeHelp" class="native-help hidden">
-        <p>Setup required:</p>
-        <ol>
-          <li>Install <a href="https://stockfishchess.org/download/" target="_blank" rel="noopener">Stockfish</a></li>
-          <li>Run <code>install.bat</code> with your extension ID:</li>
+        <p class="setup-title">First-time setup</p>
+        <ol class="setup-steps">
+          <li>
+            <a href="https://github.com/lurimous/Chessist" target="_blank" rel="noopener">Download Chessist</a>
+            and extract it somewhere permanent
+          </li>
+          <li>
+            Install <a href="https://stockfishchess.org/download/" target="_blank" rel="noopener">Stockfish</a>
+            (add to PATH or note the .exe path)
+          </li>
+          <li>
+            Run <strong>setup.bat</strong> — it will ask for your extension ID:
+            <button type="button" id="copyIdBtn" class="copy-path-btn" title="Click to copy extension ID">
+              <span class="path-text" id="extensionId">Loading...</span>
+              <span class="copy-icon">📋</span>
+            </button>
+          </li>
+          <li>Restart your browser</li>
         </ol>
-        <button type="button" id="copyIdBtn" class="copy-path-btn" title="Click to copy extension ID">
-          <span class="path-text" id="extensionId">Loading...</span>
-          <span class="copy-icon">📋</span>
-        </button>
-        <p class="help-hint">Copy ID above, then run install.bat and paste it when prompted</p>
+        <p class="help-hint">setup.bat installs dependencies, builds the overlay, and registers the native engine.</p>
       </div>
 
       <button type="button" id="forceRestartBtn" class="force-restart-btn" title="Force restart engine if stuck">
