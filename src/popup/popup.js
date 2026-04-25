@@ -96,7 +96,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   autoMoveToggle.checked = settings.autoMove === true;
   autoRematchToggle.checked = settings.autoRematch === true;
   autoNewGameToggle.checked = settings.autoNewGame === true;
-  stealthModeToggle.checked = settings.stealthMode === true;
+  stealthModeToggle.checked = settings.stealthMode !== false;
   engineDepth.value = settings.engineDepth || 18;
   depthValue.textContent = engineDepth.value;
   currentEngineSource = settings.engineSource || 'wasm';
@@ -191,6 +191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   showAltArrowsToggle.addEventListener('change', async () => {
     await chrome.storage.sync.set({ showAltArrows: showAltArrowsToggle.checked });
     notifyContentScripts({ type: 'SETTINGS_UPDATED', showAltArrows: showAltArrowsToggle.checked });
+    chrome.runtime.sendMessage({ type: 'SET_MULTIPV', value: showAltArrowsToggle.checked ? 3 : 1 }).catch(() => {});
   });
 
   // Overlay debug toggle — restart overlay exe with/without -debug flag

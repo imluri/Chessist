@@ -301,9 +301,24 @@ function checkPVContinuation(newFen) {
   return null;
 }
 
-// Load engine source preference
-chrome.storage.sync.get(['engineSource']).then(result => {
+// In-memory settings cache — avoids storage.sync round-trip on every eval
+let cachedEngineDepth = 18;
+
+// Tab ID cache — avoids chrome.tabs.query on every depth update
+let cachedContentTabIds = null;
+let tabCacheTimer = null;
+function invalidateTabCache() {
+  cachedContentTabIds = null;
+  if (tabCacheTimer) { clearTimeout(tabCacheTimer); tabCacheTimer = null; }
+}
+chrome.tabs.onCreated.addListener(invalidateTabCache);
+chrome.tabs.onRemoved.addListener(invalidateTabCache);
+chrome.tabs.onUpdated.addListener((id, info) => { if (info.url) invalidateTabCache(); });
+
+// Load initial settings
+chrome.storage.sync.get(['engineSource', 'engineDepth']).then(result => {
   engineSource = result.engineSource || 'wasm';
+  cachedEngineDepth = result.engineDepth || 18;
   if (engineSource === 'native') {
     connectNative();
   }
@@ -454,12 +469,13 @@ function handleNativeMessage(message) {
   }
   else if (message.type === 'ready') {
     console.log('Chessist SW: Native Stockfish ready');
-    // Apply saved skill level on engine ready
-    chrome.storage.sync.get(['skillLevel']).then(settings => {
+    chrome.storage.sync.get(['skillLevel', 'showAltArrows']).then(settings => {
       const level = settings.skillLevel ?? 20;
       if (level < 20) {
         sendToNativePort({ type: 'set_option', name: 'Skill Level', value: level });
       }
+      const multiPv = settings.showAltArrows !== false ? 3 : 1;
+      sendToNativePort({ type: 'set_option', name: 'MultiPV', value: multiPv });
     });
   }
   else if (message.type === 'analyzing') {
@@ -738,6 +754,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
+  if (message.type === 'SET_MULTIPV') {
+    const multiPv = message.value || 1;
+    if (engineSource === 'native' && nativePort && nativeConnected) {
+      sendToNativePort({ type: 'set_option', name: 'MultiPV', value: multiPv });
+    } else {
+      chrome.runtime.sendMessage({ type: 'SET_MULTIPV', value: multiPv }).catch(() => {});
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (message.type === 'SET_OVERLAY_MODE') {
     if (nativePort && nativeConnected) {
       sendToNativePort({ type: message.enabled ? 'start_overlay' : 'stop_overlay' });
@@ -791,11 +818,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'SET_DEPTH') {
-    // Forward to native or WASM
+    cachedEngineDepth = message.depth || 18;
     if (engineSource === 'native' && nativePort) {
       sendToNativePort({ type: 'set_option', name: 'Depth', value: message.depth });
     }
-    // WASM will read from storage
     sendResponse({ success: true });
     return true;
   }
@@ -907,9 +933,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Handle evaluation request
 async function handleEvaluateRequest(fen, isMouseRelease, tabId, sendResponse) {
-  const settings = await chrome.storage.sync.get(['engineDepth', 'engineSource']);
-  const depth = settings.engineDepth || 18;
-  const source = settings.engineSource || 'wasm';
+  const depth = cachedEngineDepth;
+  const source = engineSource;
 
   // Track current FEN being evaluated (for turn info in results)
   currentEvalFen = fen;
@@ -1052,25 +1077,29 @@ async function handleWasmEvaluation(fen, depth, sendResponse) {
 // Broadcast message to all Chess.com and Lichess tabs
 async function broadcastToContentScripts(message) {
   try {
-    // Send to content scripts in Chess.com and Lichess tabs
-    const [chessTabs, lichessTabs] = await Promise.all([
-      chrome.tabs.query({ url: 'https://www.chess.com/*' }),
-      chrome.tabs.query({ url: 'https://lichess.org/*' })
-    ]);
-    const tabs = [...chessTabs, ...lichessTabs];
-    for (const tab of tabs) {
-      try {
-        await chrome.tabs.sendMessage(tab.id, message);
-      } catch (e) {
-        // Tab might not have content script loaded
-      }
+    // Resolve tab IDs — use cache to avoid repeated chrome.tabs.query on every depth line
+    if (!cachedContentTabIds) {
+      const [chessTabs, lichessTabs] = await Promise.all([
+        chrome.tabs.query({ url: 'https://www.chess.com/*' }),
+        chrome.tabs.query({ url: 'https://lichess.org/*' })
+      ]);
+      cachedContentTabIds = [...chessTabs, ...lichessTabs].map(t => t.id);
+      // Auto-expire cache after 10 s in case tab events are missed
+      tabCacheTimer = setTimeout(invalidateTabCache, 10000);
     }
-    // Also broadcast to extension pages (popup) for live updates
-    try {
-      chrome.runtime.sendMessage(message);
-    } catch (e) {
-      // Popup might not be open
-    }
+
+    // Send to all content-script tabs in parallel
+    await Promise.all(
+      cachedContentTabIds.map(id =>
+        chrome.tabs.sendMessage(id, message).catch(() => {
+          // Tab gone — drop it from the cache so next broadcast re-queries
+          cachedContentTabIds = cachedContentTabIds?.filter(t => t !== id) ?? null;
+        })
+      )
+    );
+
+    // Also push to extension pages (popup) for live eval display
+    chrome.runtime.sendMessage(message).catch(() => {});
   } catch (e) {
     console.error('Broadcast error:', e);
   }

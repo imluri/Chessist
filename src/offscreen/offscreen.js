@@ -73,7 +73,7 @@ function handleEngineMessage(event) {
   // Engine is ready
   if (message === 'uciok') {
     console.log('Chessist Offscreen: UCI OK, setting MultiPV and sending isready');
-    stockfish.postMessage('setoption name MultiPV value 3');
+    stockfish.postMessage('setoption name MultiPV value 1');
     stockfish.postMessage('isready');
   }
 
@@ -236,6 +236,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.depth) currentDepth = message.depth;
     evaluatePosition(message.fen);
     sendResponse({ status: 'evaluating' });
+  } else if (message.type === 'SET_MULTIPV') {
+    const v = message.value || 1;
+    if (stockfish) stockfish.postMessage(`setoption name MultiPV value ${v}`);
+    sendResponse({ status: 'ok' });
   } else if (message.type === 'SET_DEPTH') {
     currentDepth = message.depth;
     sendResponse({ status: 'ok' });

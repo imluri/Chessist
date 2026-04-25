@@ -276,7 +276,7 @@ def read_stockfish_output():
                 # Configure engine
                 stockfish_process.stdin.write("setoption name Threads value 4\n")
                 stockfish_process.stdin.write("setoption name Hash value 128\n")
-                stockfish_process.stdin.write("setoption name MultiPV value 3\n")
+                stockfish_process.stdin.write("setoption name MultiPV value 1\n")
                 stockfish_process.stdin.write("isready\n")
                 stockfish_process.stdin.flush()
 

@@ -56,7 +56,7 @@
   let manualOffsetX = 0;
   let manualOffsetY = 0;
   let targetDepth = 18;
-  let stealthMode = false;
+  let stealthMode = true;
   let instantMove = false;
   let smartTiming = true;
   let autoRematch = false;
@@ -93,7 +93,7 @@
       smartTiming = result.smartTiming !== false;
       autoRematch = result.autoRematch === true;
       autoNewGame = result.autoNewGame === true;
-      stealthMode = result.stealthMode === true;
+      stealthMode = result.stealthMode !== false;
       targetDepth = result.engineDepth || 18;
       manualPlayerColor = result.playerColor || 'auto';
       autoMoveDelayMin = result.autoMoveDelayMin ?? 0.5;

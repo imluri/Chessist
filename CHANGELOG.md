@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.2 — Performance update
+
+### Changed
+- **MultiPV 1 by default** — Stockfish now searches a single line unless "Show Alternative Arrows" is enabled, cutting analysis time roughly in half for most positions
+- **Dynamic MultiPV toggle** — enabling/disabling alternative arrows at runtime sends `setoption name MultiPV` live to the engine without requiring a restart
+- **Stealth Mode** - enabled by default
+
+### Fixed
+- **Per-eval storage read removed** — `engineDepth` is now cached in memory and updated on change; previously a `chrome.storage.sync.get` was awaited on every single eval request, adding unnecessary latency
+- **Parallel tab broadcasts** — `EVAL_RESULT` messages are now sent to all content-script tabs simultaneously (`Promise.all`) instead of sequentially, reducing broadcast overhead with multiple tabs open
+- **Tab ID cache** — content-script tab IDs are cached between broadcasts and only re-queried when tabs open, close, or navigate, eliminating repeated `chrome.tabs.query` calls on every Stockfish depth line
+
+---
+
 ## v1.2.1 — Overlay fixes
 
 ### Fixed

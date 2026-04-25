@@ -57,7 +57,7 @@
   let manualOffsetX = 0;
   let manualOffsetY = 0;
   let targetDepth = 18; // Default depth
-  let stealthMode = false; // Disable console logging when true
+  let stealthMode = true; // Disable console logging when true
   let instantMove = false; // Make moves instantly without delay
   let smartTiming = true; // Adjust delay based on move complexity
   let autoRematch = false; // Auto click rematch
@@ -105,7 +105,7 @@
       smartTiming = result.smartTiming !== false; // Default true
       autoRematch = result.autoRematch === true; // Default false
       autoNewGame = result.autoNewGame === true; // Default false
-      stealthMode = result.stealthMode === true; // Default false
+      stealthMode = result.stealthMode !== false; // Default true
       targetDepth = result.engineDepth || 18;
       manualPlayerColor = result.playerColor || 'auto';
       autoMoveDelayMin = result.autoMoveDelayMin ?? 0.5;
