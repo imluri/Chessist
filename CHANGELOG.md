@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.3.0 — Chessist Engine
+
+### Added
+- **Chessist Engine** — native C# engine host replaces Python native messaging; run `ChessistEngine.exe` and Stockfish analysis streams directly to the extension over WebSocket with no Python dependency
+- **Always-on WebSocket engine connection** — content scripts connect to the engine on page load regardless of overlay mode; no manual engine-source switching required
+- **WASM fallback** — extension automatically falls back to the built-in WASM Stockfish when ChessistEngine.exe is not running; no configuration needed
+- **Bidirectional eval protocol** — same WebSocket connection used for overlay display and engine eval requests; engine streams multi-PV results back as JSON `eval` messages
+- **Engine status indicator** — popup shows live engine connection state (connected / not running)
+
+### Removed
+- **Python native messaging host** — no longer needed; Python and the `websockets` pip package are not required
+- **Engine source toggle** — replaced with automatic detection; extension uses native engine when available, WASM when not
+- `setup.bat` no longer requires Python, pip, or extension ID for native messaging registration
+
+### Changed
+- `setup.bat` simplified — only checks for Stockfish and optionally adds ChessistEngine.exe to Windows startup
+
+---
+
 ## v1.2.2 — Performance update
 
 ### Changed

@@ -10,7 +10,11 @@
       "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\Users\\\\luri\\\\Documents\\\\Programming\\\\Chessist\\\\overlay\" -Force)",
       "Bash(dotnet build *)",
       "Bash(taskkill /f /im ChessistOverlay.exe)",
-      "Bash(grep -v \"^.*//.*overlayMode\")"
+      "Bash(grep -v \"^.*//.*overlayMode\")",
+      "Bash(cat *.csproj)",
+      "Bash(cat *.sln)",
+      "Bash(grep -v \"//.*getElementById\")",
+      "Bash(taskkill /f /im ChessistEngine.exe)"
     ]
   }
 }

@@ -62,8 +62,8 @@
   let smartTiming = true; // Adjust delay based on move complexity
   let autoRematch = false; // Auto click rematch
   let autoNewGame = false; // Auto click new game
-  let autoMoveDelayMin = 0.5; // Minimum delay in seconds before auto-move
-  let autoMoveDelayMax = 2; // Maximum delay in seconds before auto-move
+  let autoMoveDelayMin = 0.1;
+  let autoMoveDelayMax = 0.3;
   let skillLevel = 20; // Stockfish skill level (1-20, 20 = best)
   let lastGameUrl = null; // Track game URL for new game detection (Chess.com SPA)
 
@@ -108,8 +108,8 @@
       stealthMode = result.stealthMode !== false; // Default true
       targetDepth = result.engineDepth || 18;
       manualPlayerColor = result.playerColor || 'auto';
-      autoMoveDelayMin = result.autoMoveDelayMin ?? 0.5;
-      autoMoveDelayMax = result.autoMoveDelayMax ?? 2;
+      autoMoveDelayMin = result.autoMoveDelayMin ?? 0.1;
+      autoMoveDelayMax = result.autoMoveDelayMax ?? 0.3;
       skillLevel = result.skillLevel ?? 20;
       targetAccuracy = result.targetAccuracy ?? 100;
       wlBalance = result.wlBalance === true;
@@ -124,8 +124,8 @@
       manualMap     = localData.manualMap     === true;
       manualOffsetX = localData.manualOffsetX ?? 0;
       manualOffsetY = localData.manualOffsetY ?? 0;
+      if (overlayMode) _connectEngineWs();
       if (overlayMode) {
-        _connectOverlayWs();
         if (evalBar) evalBar.style.display = 'none';
         if (evalBarContainer) evalBarContainer.style.display = 'none';
         clearArrow();
@@ -224,8 +224,8 @@
     return svg;
   }
 
-  // Draw a single arrow on an SVG group. color/opacity/strokeWidth are visual params.
-  function drawArrow(group, fromSquare, toSquare, isFlipped, color, opacity, strokeWidth) {
+  // Draw a single arrow on an SVG group. outlineColor (optional) draws a halo for contrast.
+  function drawArrow(group, fromSquare, toSquare, isFlipped, color, opacity, strokeWidth, outlineColor) {
     const from = getSquareCenter(fromSquare, isFlipped);
     const to   = getSquareCenter(toSquare,   isFlipped);
 
@@ -242,30 +242,41 @@
     const lineEndX = to.x - Math.cos(angle) * arrowHeadLength * 0.6;
     const lineEndY = to.y - Math.sin(angle) * arrowHeadLength * 0.6;
 
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', from.x.toFixed(2));
-    line.setAttribute('y1', from.y.toFixed(2));
-    line.setAttribute('x2', lineEndX.toFixed(2));
-    line.setAttribute('y2', lineEndY.toFixed(2));
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', strokeWidth);
-    line.setAttribute('stroke-linecap', 'round');
-    line.setAttribute('opacity', opacity);
-
     const headBaseX = to.x - Math.cos(angle) * arrowHeadLength;
     const headBaseY = to.y - Math.sin(angle) * arrowHeadLength;
     const perpX = Math.sin(angle) * arrowHeadWidth / 2;
     const perpY = -Math.cos(angle) * arrowHeadWidth / 2;
 
-    const head = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-    head.setAttribute('points', `
-      ${to.x.toFixed(2)},${to.y.toFixed(2)}
-      ${(headBaseX + perpX).toFixed(2)},${(headBaseY + perpY).toFixed(2)}
-      ${(headBaseX - perpX).toFixed(2)},${(headBaseY - perpY).toFixed(2)}
-    `);
-    head.setAttribute('fill', color);
-    head.setAttribute('opacity', opacity);
+    function makeArrowElements(c, sw) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', from.x.toFixed(2));
+      line.setAttribute('y1', from.y.toFixed(2));
+      line.setAttribute('x2', lineEndX.toFixed(2));
+      line.setAttribute('y2', lineEndY.toFixed(2));
+      line.setAttribute('stroke', c);
+      line.setAttribute('stroke-width', sw);
+      line.setAttribute('stroke-linecap', 'round');
+      line.setAttribute('opacity', opacity);
 
+      const head = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      head.setAttribute('points', `
+        ${to.x.toFixed(2)},${to.y.toFixed(2)}
+        ${(headBaseX + perpX).toFixed(2)},${(headBaseY + perpY).toFixed(2)}
+        ${(headBaseX - perpX).toFixed(2)},${(headBaseY - perpY).toFixed(2)}
+      `);
+      head.setAttribute('fill', c);
+      head.setAttribute('opacity', opacity);
+      return [line, head];
+    }
+
+    // Outline halo drawn first (behind) for visibility on any board color
+    if (outlineColor) {
+      const [ol, oh] = makeArrowElements(outlineColor, +strokeWidth + 1.6);
+      group.appendChild(ol);
+      group.appendChild(oh);
+    }
+
+    const [line, head] = makeArrowElements(color, strokeWidth);
     group.appendChild(line);
     group.appendChild(head);
   }
@@ -299,8 +310,16 @@
 
     const alts = (multiPvMoves || []).filter(m => m && m.length >= 4);
 
-    // Draw alternatives first (behind best move)
-    if (showAltArrows) {
+    if (isPuzzleMode()) {
+      // Puzzle: alts[0] = opposite side's independent best move (from flipped-color eval)
+      // Cyan (#5ad7f0) = white pieces; orange (#f07828) = black pieces — both visible on any square
+      if (alts[0]) {
+        const oppColor = currentTurn === 'w' ? '#f07828' : '#5ad7f0';
+        drawArrow(group, alts[0].substring(0, 2), alts[0].substring(2, 4),
+                  isFlipped, oppColor, '0.78', 1.9);
+      }
+    } else if (showAltArrows) {
+      // Normal: 2nd and 3rd best from multi-PV
       if (alts[2]) {
         drawArrow(group, alts[2].substring(0, 2), alts[2].substring(2, 4),
                   isFlipped, '#e05050', '0.45', 1.6);
@@ -310,9 +329,13 @@
                   isFlipped, '#e0b840', '0.55', 1.8);
       }
     }
-    // Best move on top
+
+    // Best move on top — cyan/orange in puzzle mode (by side), purple in normal mode
+    const mainColor = isPuzzleMode()
+      ? (currentTurn === 'w' ? '#5ad7f0' : '#f07828')
+      : '#792A9E';
     drawArrow(group, move.substring(0, 2), move.substring(2, 4),
-              isFlipped, '#792A9E', '0.9', 2.2);
+              isFlipped, mainColor, '0.9', 2.2);
 
     svg.appendChild(group);
     currentBestMove = move;
@@ -482,6 +505,27 @@
     }
   }
 
+  // Execute a move and verify it registered; retry up to twice if not
+  function _executeMoveVerified(move, positionKeyBefore) {
+    executeMove(move);
+    setTimeout(() => {
+      const currentKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
+      if (currentKey !== positionKeyBefore) return; // move registered, done
+      log('Chessist: Move not registered, retrying:', move);
+      lastAutoMovePosition = null;
+      executeMove(move);
+      // Second check: if still stuck, unblock and force re-eval
+      setTimeout(() => {
+        const stillKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
+        if (stillKey === positionKeyBefore) {
+          log('Chessist: Retry also failed, forcing re-eval');
+          lastAutoMovePosition = null;
+          if (currentFen) requestEval(currentFen);
+        }
+      }, 500);
+    }, 400);
+  }
+
   // Execute a move on the board (auto-move feature)
   function executeMove(move) {
     if (!move || move.length < 4) return false;
@@ -581,6 +625,7 @@
     pieceEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, clientX: fromX, clientY: fromY, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }));
     pieceEl.dispatchEvent(new MouseEvent('mousedown',     { bubbles: true, cancelable: true, view: window, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
 
+    const _dragDelay = (instantMove && autoMove) ? 8 : 50;
     setTimeout(() => {
       document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, view: window, clientX: toX, clientY: toY, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }));
       document.dispatchEvent(new MouseEvent('mousemove',     { bubbles: true, cancelable: true, view: window, clientX: toX, clientY: toY, button: 0, buttons: 1 }));
@@ -592,8 +637,8 @@
         if (promotion) {
           setTimeout(() => handlePromotion(promotion), 200);
         }
-      }, 50);
-    }, 50);
+      }, _dragDelay);
+    }, _dragDelay);
 
     return true;
   }
@@ -1096,6 +1141,44 @@
 
   // Try to detect whose turn it is
   function detectTurn() {
+    // Method 0: Puzzle page — read the "X to move" indicator from the puzzle UI.
+    // All other methods fail for puzzles (no move list, no clocks, no data-ply).
+    if (isPuzzleMode()) {
+      // Puzzle Rush: sidebar status square
+      const rushSquare = document.querySelector('.sidebar-status-square-sidebar-square');
+      if (rushSquare) {
+        if (rushSquare.classList.contains('sidebar-status-square-black')) return 'b';
+        if (rushSquare.classList.contains('sidebar-status-square-white')) return 'w';
+      }
+      // Puzzle Rush: heading text ("Black to Move" / "White to Move")
+      const rushHeading = document.querySelector('.section-heading-title');
+      if (rushHeading) {
+        const t = rushHeading.textContent?.toLowerCase() || '';
+        if (t.includes('black to move')) return 'b';
+        if (t.includes('white to move')) return 'w';
+      }
+      // Regular puzzle: coach feedback icon
+      const colorIcon = document.querySelector(
+        '.cc-coach-feedback-detail-icon.cc-coach-feedback-detail-colorToMove');
+      if (colorIcon) {
+        if (colorIcon.classList.contains('cc-coach-feedback-detail-black-to-move')) return 'b';
+        if (colorIcon.classList.contains('cc-coach-feedback-detail-white-to-move')) return 'w';
+      }
+      const colorText = document.querySelector('.cc-coach-feedback-detail-text');
+      if (colorText) {
+        const t = colorText.textContent?.toLowerCase() || '';
+        if (t.includes('black to move')) return 'b';
+        if (t.includes('white to move')) return 'w';
+      }
+      // Generic fallback
+      const hint = document.querySelector('[class*="toMove"], [class*="to-move"], [class*="colorToMove"]');
+      if (hint) {
+        const t = (hint.textContent || hint.className).toLowerCase();
+        if (t.includes('black')) return 'b';
+        if (t.includes('white')) return 'w';
+      }
+    }
+
     // Method 1: Try to get turn from Chess.com's game object directly
     try {
       const gameTag = document.querySelector('chess-board, wc-chess-board');
@@ -1573,32 +1656,170 @@
   // ── Overlay WebSocket (direct, low-latency) ─────────────────────────────────
   let _overlayWs = null;
   let _overlayReconnectTimer = null;
+
+  // ── Move prediction cache ─────────────────────────────────────────────────
+  let _pvQuickCache = null; // instant pv-derived prediction: { fenKey, bestMove, cp, mate, pv, depth, turn }
+  let _preWarmCache = null; // exact engine result for predicted position: { fenKey, eval }
+  // Puzzle mode: independent eval for the opposite color from the same position
+  let _puzzleFlippedFen = null;
+  let _puzzleFlippedEval = null;
+
+  function _fenKey(fen) { return fen ? fen.split(' ').slice(0, 2).join(' ') : null; }
+
+  // Swap active color and clear en passant (used to evaluate both sides in puzzle mode)
+  function _flipFenColor(fen) {
+    const p = fen.split(' ');
+    p[1] = p[1] === 'w' ? 'b' : 'w';
+    p[3] = '-';
+    return p.join(' ');
+  }
+
+  function _applyMove(fen, move) {
+    if (!fen || !move || move.length < 4) return null;
+    try {
+      const sp = fen.split(' ');
+      const turn = sp[1] || 'w';
+      const b = sp[0].split('/').map(r => {
+        const row = [];
+        for (const c of r) /\d/.test(c) ? row.push(...Array(+c).fill(null)) : row.push(c);
+        return row;
+      });
+      const ff = move.charCodeAt(0)-97, fr = +move[1]-1;
+      const tf = move.charCodeAt(2)-97, tr = +move[3]-1;
+      const piece = b[7-fr][ff];
+      if (!piece) return null;
+      b[7-fr][ff] = null;
+      b[7-tr][tf] = move[4] ? (turn==='w' ? move[4].toUpperCase() : move[4]) : piece;
+      if (piece.toLowerCase()==='k' && Math.abs(tf-ff)===2) {
+        const rf=tf>ff?7:0, rt=tf>ff?5:3;
+        b[7-fr][rt]=b[7-fr][rf]; b[7-fr][rf]=null;
+      }
+      const board = b.map(row => {
+        let s='',e=0;
+        for (const c of row) c?(e&&(s+=e,e=0),s+=c):e++;
+        return s+(e||'');
+      }).join('/');
+      return `${board} ${turn==='w'?'b':'w'} - - 0 1`;
+    } catch (_) { return null; }
+  }
+
+  function _updatePVPrediction(evaluation) {
+    if (!evaluation.pv || evaluation.pv.length < 2 || !currentFen) return;
+    const after1 = _applyMove(currentFen, evaluation.pv[0]);
+    if (!after1) return;
+    const after2 = _applyMove(after1, evaluation.pv[1]);
+    if (!after2) return;
+    const key = _fenKey(after2);
+    _pvQuickCache = {
+      fenKey: key,
+      bestMove: evaluation.pv[2] || null,
+      cp: evaluation.cp,
+      mate: evaluation.mate,
+      pv: evaluation.pv.slice(2),
+      depth: evaluation.depth,
+      turn: after2.split(' ')[1] || 'w',
+    };
+    _preWarmCache = null;
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try {
+        _overlayWs.send(JSON.stringify({
+          type: 'evaluate', fen: after2, depth: targetDepth, multiPv: showAltArrows ? 3 : 1,
+        }));
+      } catch (_) {}
+    }
+  }
   let _boardObserver = null;
   let _observedBoard = null;
   let _lastEvaluation = null; // cached for immediate redraw on WS reconnect
 
-  function _connectOverlayWs() {
+  function _connectEngineWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
     try {
       _overlayWs = new WebSocket('ws://127.0.0.1:27301');
       _overlayWs.onopen  = () => {
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
+        // Board may not be in DOM yet on page load — poll until ready
+        if (!findBoard()) {
+          const _initPoll = setInterval(() => {
+            if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
+            if (findBoard()) { sendPositionUpdate(); clearInterval(_initPoll); }
+          }, 200);
+        }
         if (_lastEvaluation) updateEval(_lastEvaluation); // immediate redraw with cached data
-        else if (currentFen) requestEval(currentFen);
+        if (currentFen) requestEval(currentFen); // always request fresh after (re)connect
+      };
+      _overlayWs.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'eval' && msg.data) {
+            const d = msg.data;
+            const key = _fenKey(d.fen);
+            const curKey = _fenKey(currentFen);
+            if (key && key !== curKey) {
+              // Puzzle: intercept the color-flipped eval (same pieces, opposite active color)
+              // if (isPuzzleMode() && currentFen && d.fen) {
+              //   const dPieces  = d.fen.split(' ')[0];
+              //   const curPieces = currentFen.split(' ')[0];
+              //   const dColor   = d.fen.split(' ')[1];
+              //   const curColor  = currentFen.split(' ')[1];
+              //   if (dPieces === curPieces && dColor !== curColor) {
+              //     if (d.depth >= targetDepth) {
+              //       _puzzleFlippedEval = d;
+              //       _redrawPuzzleArrows();
+              //     }
+              //     return;
+              //   }
+              // }
+              // Only store complete (target-depth) pre-warm results — intermediate depths would
+              // be served as the final answer and block the fresh eval request.
+              if (_pvQuickCache && key === _pvQuickCache.fenKey && d.depth >= targetDepth)
+                _preWarmCache = { fenKey: key, eval: d };
+              return;
+            }
+            handleEvaluationResult(d);
+          } else if (msg.type === 'engine_status') {
+            chrome.runtime.sendMessage({ type: 'ENGINE_STATUS', status: msg.status, message: msg.message }).catch(() => {});
+          }
+        } catch (ignore) {}
       };
       _overlayWs.onclose = () => {
         _overlayWs = null;
-        if (overlayMode) _overlayReconnectTimer = setTimeout(_connectOverlayWs, 3000);
+        _overlayReconnectTimer = setTimeout(_connectEngineWs, 3000);
       };
       _overlayWs.onerror = () => {}; // onclose fires next
     } catch (e) {}
   }
 
+  // Alias for call sites that reference the old name
+  function _connectOverlayWs() { _connectEngineWs(); }
+
+  // Draw puzzle arrows only when both evals are ready at target depth
+  // Called when flipped-color eval arrives — redraws both arrows together
+  function _redrawPuzzleArrows() {
+    if (!isPuzzleMode() || !_lastEvaluation || !_puzzleFlippedEval || !currentFen) return;
+    if (_lastEvaluation.depth < targetDepth) return;
+    // Both evals must be for the current board position (piece placement); fen may be absent
+    const curPieces = currentFen.split(' ')[0];
+    if (_lastEvaluation.fen && _lastEvaluation.fen.split(' ')[0] !== curPieces) return;
+    if (_puzzleFlippedEval.fen && _puzzleFlippedEval.fen.split(' ')[0] !== curPieces) return;
+    const mainBest = _lastEvaluation.bestMove;
+    const flippedBest = _puzzleFlippedEval.bestMove;
+    if (mainBest && mainBest.length >= 4) {
+      drawBestMoveArrow(mainBest, flippedBest && flippedBest.length >= 4 ? [flippedBest] : []);
+    }
+    if (overlayMode && _lastEvaluation.depth >= targetDepth) {
+      sendOverlayUpdate(_lastEvaluation);
+    }
+  }
+
   function _disconnectOverlayWs() {
+    // Keep WS alive for engine eval; cancel pending reconnect and notify C# to hide overlay
     clearTimeout(_overlayReconnectTimer);
     _overlayReconnectTimer = null;
-    if (_overlayWs) { try { _overlayWs.close(); } catch (e) {} _overlayWs = null; }
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+    }
   }
 
   function sendPositionUpdate() {
@@ -1641,10 +1862,10 @@
     }
   }, 250);
 
-  // Fallback: re-show overlay every 1s when focused, in case the focus event was missed
+  // Fallback: re-show overlay every 1s — catches focus-restore, post-refresh board-ready, etc.
   setInterval(() => {
     if (!overlayMode || !isEnabled || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-    if (document.hasFocus()) sendPositionUpdate();
+    sendPositionUpdate();
   }, 1000);
   window.addEventListener('resize', sendPositionUpdate);
   window.addEventListener('scroll', sendPositionUpdate, { passive: true });
@@ -1658,19 +1879,17 @@
   // Tab hide/show (tab switch, minimize) — popup opening does NOT trigger visibilitychange.
   // Alt-tab is handled by the C# foreground check so no blur→visible:false needed.
   document.addEventListener('visibilitychange', () => {
-    if (!overlayMode) return;
     if (document.hidden) {
-      if (_overlayWs?.readyState === WebSocket.OPEN)
+      if (overlayMode && _overlayWs?.readyState === WebSocket.OPEN)
         try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
     } else {
       if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN) sendPositionUpdate();
-      else _connectOverlayWs();
+      else if (overlayMode) _connectEngineWs();
     }
   });
   // Reconnect WS if closed while away (popup, alt-tab, etc.)
   window.addEventListener('focus', () => {
-    if (!overlayMode) return;
-    if (!(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectOverlayWs();
+    if (overlayMode && !(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectEngineWs();
   });
 
   function sendOverlayUpdate(fillPercent, displayScore, isFlipped, evaluation) {
@@ -1683,37 +1902,53 @@
     if (!board) return;
     const rect = board.getBoundingClientRect();
 
-    // Mirror the same show/hide rules as the HTML overlay.
-    // Arrow[0] = purple (best move). Arrow[1,2] = yellow/red (alternatives).
-    // Alternatives are only sent when the best move is also shown, so C# index→color stays correct.
-    const isPlayerTurn = !playerColor || currentTurn === playerColor;
-    const showBest = isPlayerTurn ? showBestMove : showOpponentBestMove;
-    const atDepth  = evaluation.depth >= targetDepth;
-    const arrows   = [];
-    if (showBest && atDepth) {
-      const alts = (evaluation.multiPvMoves || []).filter(m => m && m.length >= 4);
-      if (alts.length > 0)
-        arrows.push({ from: alts[0].substring(0, 2), to: alts[0].substring(2, 4) });
-      if (showAltArrows) {
-        for (let i = 1; i < Math.min(3, alts.length); i++)
-          arrows.push({ from: alts[i].substring(0, 2), to: alts[i].substring(2, 4) });
+    const atDepth = evaluation.depth >= targetDepth;
+    const arrows  = [];
+    if (isPuzzleMode()) {
+      // Puzzle: independent best moves for each side — not a PV line.
+      // Below target depth: send empty array to clear stale arrows from previous position.
+      if (atDepth) {
+        const best = evaluation.bestMove;
+        if (best && best.length >= 4)
+          arrows.push({ from: best.substring(0, 2), to: best.substring(2, 4) });
+        const opp = _puzzleFlippedEval?.bestMove;
+        if (opp && opp.length >= 4)
+          arrows.push({ from: opp.substring(0, 2), to: opp.substring(2, 4) });
+      }
+    } else {
+      // Normal game: mirror show/hide rules.
+      // Arrow[0] = purple (best move). Arrow[1,2] = yellow/red (alternatives).
+      const isPlayerTurn = !playerColor || currentTurn === playerColor;
+      const showBest = isPlayerTurn ? showBestMove : showOpponentBestMove;
+      if (showBest && atDepth) {
+        const best = evaluation.bestMove;
+        if (best && best.length >= 4)
+          arrows.push({ from: best.substring(0, 2), to: best.substring(2, 4) });
+        if (showAltArrows) {
+          const alts = (evaluation.multiPvMoves || []).filter(m => m && m.length >= 4);
+          for (let i = 0; i < Math.min(2, alts.length); i++)
+            arrows.push({ from: alts[i].substring(0, 2), to: alts[i].substring(2, 4) });
+        }
       }
     }
 
     const dpr = window.devicePixelRatio || 1;
     try {
-      _overlayWs.send(JSON.stringify({
+      const msg = {
         visible: true,
         flipped: isFlipped,
         viewX: rect.left, viewY: rect.top,
         width: rect.width, height: rect.height,
         dpr,
         evalBar: { fillPercent, isFlipped, score: displayScore },
-        arrows,
         manualMap,
         offsetX: manualOffsetX,
         offsetY: manualOffsetY,
-      }));
+      };
+      // Puzzle: always send arrows (clears stale on sub-depth, shows both colors at target depth).
+      // Normal: only update arrows at target depth to avoid blanking them mid-analysis.
+      if (isPuzzleMode() || atDepth) msg.arrows = arrows;
+      _overlayWs.send(JSON.stringify(msg));
     } catch (e) {}
   }
 
@@ -1856,7 +2091,11 @@
           log(`Best move: ${formattedMove} (depth ${evaluation.depth}, eval: ${displayScore})`);
         }
 
-        if (showBestMove && bestMoveEl) {
+        if (isPuzzleMode()) {
+          if (evaluation.depth >= targetDepth) {
+            drawBestMoveArrow(move, []);
+          }
+        } else if (showBestMove && bestMoveEl) {
           bestMoveEl.textContent = formattedMove;
           bestMoveEl.style.display = 'block';
 
@@ -1898,8 +2137,10 @@
       const positionKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
 
       // Only auto-move on player's turn, if eval matches current position,
-      // and if we haven't already triggered a move for this position+turn
-      if (isPlayerTurn && evalMatchesCurrent && positionKey && positionKey !== lastAutoMovePosition) {
+      // and if we haven't already triggered a move for this position+turn.
+      // fromCache=true means this is a PV-derived prediction (display only) — don't auto-move
+      // from it; wait for the real engine result (_preWarmCache or WS) to confirm the move.
+      if (isPlayerTurn && evalMatchesCurrent && positionKey && positionKey !== lastAutoMovePosition && !evaluation.fromCache) {
         lastAutoMovePosition = positionKey;  // Mark this position+turn as processed
 
         // Move selection: win mode > throw mode > targetAccuracy > skillLevel
@@ -1972,13 +2213,10 @@
         if (instantMove) {
           log('Chessist: Instant auto-move for', moveToPlay);
           hideCountdown();
-          executeMove(moveToPlay);
+          _executeMoveVerified(moveToPlay, positionKey);
         } else {
           log('Chessist: Auto-move triggered for', moveToPlay, 'with delay', finalDelay, 'ms');
-
-          // Show countdown timer
-          const expectedPosition = positionKey;
-          startCountdown(finalDelay, expectedPosition, moveToPlay);
+          startCountdown(finalDelay, positionKey, moveToPlay);
         }
       } else if (!evalMatchesCurrent) {
         log('Chessist: Skipping auto-move - stale evaluation for different position');
@@ -2095,7 +2333,7 @@
       if (remaining <= 0) {
         hideCountdown();
         log('Chessist: Countdown complete, executing move:', moveToPlay);
-        executeMove(moveToPlay);
+        _executeMoveVerified(moveToPlay, expectedPosition);
       }
     }, 100);
   }
@@ -2141,16 +2379,86 @@
 
     log('Chessist: Requesting eval for FEN:', fen, isMouseRelease ? '(mouse release)' : '');
 
+    // Use Chessist Engine via WebSocket when connected (lower latency, no IPC)
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try {
+        const key = _fenKey(fen);
+        // Serve pre-warmed exact engine result instantly (position was analyzed in background)
+        if (_preWarmCache?.fenKey === key) {
+          const cached = _preWarmCache.eval;
+          _preWarmCache = null;
+          handleEvaluationResult(cached);
+          return;
+        }
+        // Serve instant PV-derived prediction while engine computes fresh
+        if (_pvQuickCache?.fenKey === key && _pvQuickCache.bestMove) {
+          handleEvaluationResult({
+            bestMove: _pvQuickCache.bestMove, cp: _pvQuickCache.cp, mate: _pvQuickCache.mate,
+            pv: _pvQuickCache.pv, depth: _pvQuickCache.depth, turn: _pvQuickCache.turn,
+            fen, fromCache: true,
+          });
+          // Fall through — still request fresh analysis for refinement
+        }
+        _overlayWs.send(JSON.stringify({
+          type: 'evaluate', fen, depth: targetDepth, multiPv: showAltArrows ? 3 : 1,
+        }));
+        // Puzzle: also evaluate from the opposite color's perspective (deduplicated per position)
+        // if (isPuzzleMode()) {
+        //   const flippedFen = _flipFenColor(fen);
+        //   if (flippedFen !== _puzzleFlippedFen) {
+        //     _puzzleFlippedFen = flippedFen;
+        //     _puzzleFlippedEval = null;
+        //     clearArrow(); // clear stale arrows from previous position immediately
+        //     _overlayWs.send(JSON.stringify({
+        //       type: 'evaluate', fen: flippedFen, depth: targetDepth, multiPv: 1,
+        //     }));
+        //   }
+        // }
+        return;
+      } catch (e) {}
+    }
+
+    // Fallback: WASM via service worker
     try {
+      // Puzzle: detect new position BEFORE awaiting eval so clearArrow fires before arrow is drawn
+      // let _puzzleFlippedFenForRequest = null;
+      // if (isPuzzleMode()) {
+      //   const flippedFen = _flipFenColor(fen);
+      //   if (flippedFen !== _puzzleFlippedFen) {
+      //     _puzzleFlippedFen = flippedFen;
+      //     _puzzleFlippedEval = null;
+      //     clearArrow(); // clear stale arrows before new eval arrives
+      //   }
+      //   _puzzleFlippedFenForRequest = _puzzleFlippedFen;
+      // }
+
       const response = await chrome.runtime.sendMessage({
         type: 'EVALUATE',
         fen: fen,
-        isMouseRelease: isMouseRelease
+        isMouseRelease: isMouseRelease,
+        t: Date.now()
       });
 
       if (response && response.evaluation) {
         updateEval(response.evaluation);
       }
+
+      // Puzzle: send flipped eval if not already in-flight for this position
+      // if (isPuzzleMode() && _puzzleFlippedFenForRequest && !_puzzleFlippedEval
+      //     && _puzzleFlippedFen === _puzzleFlippedFenForRequest) {
+      //   const requestedFlippedFen = _puzzleFlippedFenForRequest;
+      //   const flippedResponse = await chrome.runtime.sendMessage({
+      //     type: 'EVALUATE', fen: requestedFlippedFen, t: Date.now()
+      //   });
+      //   if (flippedResponse?.evaluation) {
+      //     const fe = flippedResponse.evaluation;
+      //     const fenOk = !fe.fen || _fenKey(fe.fen) === _fenKey(requestedFlippedFen);
+      //     if (fe.depth >= targetDepth && fenOk && _puzzleFlippedFen === requestedFlippedFen) {
+      //       _puzzleFlippedEval = fe;
+      //       _redrawPuzzleArrows();
+      //     }
+      //   }
+      // }
     } catch (e) {
       const errorMsg = e.message || e.toString();
       if (errorMsg.includes('Extension context invalidated') ||
@@ -2163,60 +2471,59 @@
     }
   }
 
-  // Listen for eval updates from background
+  // Shared handler for eval results from either WS engine or WASM service worker
+  function handleEvaluationResult(evaluation) {
+    if (!evaluation) return;
+    // FEN staleness check: skip if the eval is for a different position/turn
+    if (evaluation.fen && currentFen) {
+      const evalPosition = evaluation.fen.split(' ').slice(0, 2).join(' ');
+      const currentPosition = currentFen.split(' ').slice(0, 2).join(' ');
+      if (evalPosition !== currentPosition) return;
+    }
+
+    // Calculate move accuracy from ongoing eval on opponent's turn
+    if (accuracyEvalPending) {
+      const ev = evaluation;
+      if (ev.depth >= ACCURACY_EVAL_DEPTH) {
+        const et = ev.turn || 'w';
+        let newCpWhite;
+        if (ev.mate !== undefined) {
+          const mateSigned = et === 'b' ? -ev.mate : ev.mate;
+          newCpWhite = mateSigned > 0 ? 10000 : -10000;
+        } else {
+          newCpWhite = et === 'b' ? -(ev.cp || 0) : (ev.cp || 0);
+        }
+        if (prevCpWhite !== null) {
+          const playerBefore = playerColor === 'b' ? -prevCpWhite : prevCpWhite;
+          const playerAfter  = playerColor === 'b' ? -newCpWhite  : newCpWhite;
+          const accuracy = calculateMoveAccuracy(playerBefore, playerAfter);
+          moveAccuracies.push(accuracy);
+          updateAccuracyDisplay(accuracy, accuracy >= 99);
+          saveAccuracyState();
+          if (lastMoveToSquare) {
+            const cls = classifyMove(accuracy, accuracy >= 99);
+            drawMoveIconOnBoard(lastMoveToSquare, cls);
+          }
+          log(`Chessist: Move accuracy ${accuracy.toFixed(1)}% (before cp ${prevCpWhite}, after cp ${newCpWhite})`);
+        }
+        accuracyEvalPending = false;
+      }
+    }
+
+    updateEval(evaluation);
+    chrome.runtime.sendMessage({ type: 'WS_EVAL_UPDATE', evaluation }).catch(() => {});
+    if (!evaluation.fromCache && evaluation.pv?.length >= 2 && evaluation.depth >= targetDepth)
+      _updatePVPrediction(evaluation);
+  }
+
+  // Listen for eval updates from background (WASM fallback path)
   try {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!extensionContextValid) return;
 
       try {
         if (message.type === 'EVAL_RESULT' && message.evaluation) {
-          // Compare piece positions AND turn to detect stale evals
-          // This prevents evaluations for "white to move" triggering on "black to move" with same pieces
-          if (message.evaluation.fen && currentFen) {
-            const evalPosition = message.evaluation.fen.split(' ').slice(0, 2).join(' ');
-            const currentPosition = currentFen.split(' ').slice(0, 2).join(' ');
-            if (evalPosition !== currentPosition) {
-              // Stale evaluation for a different position or turn - skip silently
-              return;
-            }
-          }
-
-          // Calculate move accuracy from ongoing eval on opponent's turn
-          if (accuracyEvalPending) {
-            const ev = message.evaluation;
-            if (ev.depth >= ACCURACY_EVAL_DEPTH) {
-              // Normalize to white's perspective
-              const et = ev.turn || 'w';
-              let newCpWhite;
-              if (ev.mate !== undefined) {
-                const mateSigned = et === 'b' ? -ev.mate : ev.mate;
-                newCpWhite = mateSigned > 0 ? 10000 : -10000;
-              } else {
-                newCpWhite = et === 'b' ? -(ev.cp || 0) : (ev.cp || 0);
-              }
-
-              if (prevCpWhite !== null) {
-                const playerBefore = playerColor === 'b' ? -prevCpWhite : prevCpWhite;
-                const playerAfter  = playerColor === 'b' ? -newCpWhite  : newCpWhite;
-                const accuracy = calculateMoveAccuracy(playerBefore, playerAfter);
-                moveAccuracies.push(accuracy);
-                updateAccuracyDisplay(accuracy, accuracy >= 99);
-                saveAccuracyState();
-                // Draw move icon on the board at the destination square
-                if (lastMoveToSquare) {
-                  const cls = classifyMove(accuracy, accuracy >= 99);
-                  drawMoveIconOnBoard(lastMoveToSquare, cls);
-                }
-                log(`Chessist: Move accuracy ${accuracy.toFixed(1)}% (before cp ${prevCpWhite}, after cp ${newCpWhite})`);
-              }
-
-              accuracyEvalPending = false;
-              // Don't stop analysis — let the eval session continue normally
-            }
-            // Fall through to updateEval so the bar stays current
-          }
-
-          updateEval(message.evaluation);
+          handleEvaluationResult(message.evaluation);
         }
       } catch (e) {
         if (e.message?.includes('Extension context invalidated')) {
@@ -2324,7 +2631,7 @@
     const moveList = document.querySelector('.move-list-wrapper, .vertical-move-list');
     if (moveList) {
       const moveObserver = new MutationObserver(() => {
-        setTimeout(() => checkForPositionChange(false), 100);
+        setTimeout(() => checkForPositionChange(false), (instantMove && autoMove) ? 0 : 100);
       });
       moveObserver.observe(moveList, { childList: true, subtree: true });
     }
@@ -2333,6 +2640,7 @@
   // Check if position has changed and request eval
   function checkForPositionChange(isMouseRelease = false) {
     clearTimeout(window.evalDebounce);
+    const _debounceMs = (instantMove && autoMove) ? 0 : (isMouseRelease ? 50 : 200);
     window.evalDebounce = setTimeout(() => {
       const board = findBoard();
       if (!board) {
@@ -2508,7 +2816,7 @@
           requestEval(fenForEval, isMouseRelease);
         }
       }
-    }, isMouseRelease ? 50 : 200); // Shorter debounce for mouse release
+    }, _debounceMs);
   }
 
   // Main initialization

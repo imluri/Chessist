@@ -373,8 +373,16 @@ input[type="range"]::-webkit-slider-thumb {
   50%       { opacity: 0.35; }
 }
 
-.overlay-status:not(.connected) #overlayStatusIcon {
+.overlay-status:not(.connected) #overlayStatusIcon,
+.overlay-status:not(.connected) #engineStatusIcon {
   animation: overlay-pulse 1.2s ease-in-out infinite;
+}
+
+.engine-desc-hint {
+  font-size: 10px;
+  color: #666;
+  margin-top: 6px;
+  line-height: 1.4;
 }
 
 .native-status {

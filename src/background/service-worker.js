@@ -7,29 +7,8 @@ let lastBestMove = null;
 let pendingRequests = new Map();
 let requestId = 0;
 let currentEvalFen = null; // Track which FEN is being evaluated
-let analysisEvalFen = null; // The FEN actually being analyzed by native engine
-let nativeEvalTimeout = null; // Debounce timer for native engine requests
-let pendingNativeFen = null; // FEN waiting to be evaluated after debounce
 let moveCounter = 0; // Track number of moves to adjust depth
 let lastMoveTime = Date.now(); // Track time between moves for game speed detection
-let analysisStartTime = 0; // When current analysis started (for stuck detection)
-const STUCK_ANALYSIS_TIMEOUT_MS = 15000; // 15 seconds before considering analysis stuck
-
-// Native messaging
-let nativePort = null;
-let nativeConnected = false;
-let nativePath = null;
-let nativeLastError = null;
-let engineSource = 'wasm'; // 'wasm' or 'native'
-
-// Watchdog for native engine health
-let lastNativeResponseTime = Date.now();
-let nativeWatchdogTimer = null;
-
-// Reconnection handling
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 3;
-let reconnectTimer = null;
 
 // === ANALYSIS CACHING ===
 // PV (Principal Variation) cache for instant response when opponent plays expected move
@@ -301,6 +280,19 @@ function checkPVContinuation(newFen) {
   return null;
 }
 
+// === NATIVE LAUNCHER (launches ChessistEngine.exe via Python native host) ===
+let nativePort = null;
+
+function connectNative() {
+  if (nativePort) return;
+  try {
+    nativePort = chrome.runtime.connectNative('com.chess.live.eval');
+    nativePort.onDisconnect.addListener(() => { nativePort = null; });
+  } catch (e) {
+    console.log('Chessist SW: native host not available:', e.message);
+  }
+}
+
 // In-memory settings cache — avoids storage.sync round-trip on every eval
 let cachedEngineDepth = 18;
 
@@ -316,218 +308,16 @@ chrome.tabs.onRemoved.addListener(invalidateTabCache);
 chrome.tabs.onUpdated.addListener((id, info) => { if (info.url) invalidateTabCache(); });
 
 // Load initial settings
-chrome.storage.sync.get(['engineSource', 'engineDepth']).then(result => {
-  engineSource = result.engineSource || 'wasm';
+chrome.storage.sync.get(['engineDepth']).then(result => {
   cachedEngineDepth = result.engineDepth || 18;
-  if (engineSource === 'native') {
-    connectNative();
-  }
 });
 
 // Content scripts open a persistent port to keep the service worker alive.
-// When a tab connects, ensure the native engine is running immediately.
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'content-alive') return;
-  if (engineSource === 'native' && !nativePort) {
-    connectNative();
-  }
+  // Keep service worker alive while content script is connected
 });
 
-// Connect to native Stockfish host
-function connectNative() {
-  if (nativePort) {
-    return; // Already connected
-  }
-
-  try {
-    console.log('Chessist SW: Connecting to native host...');
-    nativeLastError = null;
-    nativePort = chrome.runtime.connectNative('com.chess.live.eval');
-
-    nativePort.onMessage.addListener((message) => {
-      console.log('Chessist SW: Native message:', message);
-      handleNativeMessage(message);
-    });
-
-    nativePort.onDisconnect.addListener(() => {
-      const error = chrome.runtime.lastError?.message || 'Unknown error';
-      console.log('Chessist SW: Native disconnected:', error);
-      nativePort = null;
-      nativeConnected = false;
-      nativePath = null;
-      nativeLastError = error;
-      analysisEvalFen = null; // Clear analysis state on disconnect
-
-      // Stop watchdog when disconnected
-      if (nativeWatchdogTimer) {
-        clearInterval(nativeWatchdogTimer);
-        nativeWatchdogTimer = null;
-      }
-
-      // Auto-fallback to WASM only if the browser forbids native messaging (e.g., Opera)
-      // "not found" means the host isn't registered yet — a setup issue, not a browser limitation.
-      // Don't permanently switch to WASM for setup errors; let the user fix and retry.
-      if (error.includes('forbidden')) {
-        console.log('Chessist SW: Native messaging not supported by this browser, falling back to WASM');
-        engineSource = 'wasm';
-        chrome.storage.sync.set({ engineSource: 'wasm' });
-        reconnectAttempts = 0;
-        chrome.runtime.sendMessage({ type: 'ENGINE_SOURCE_CHANGED', source: 'wasm' }).catch(() => {});
-      } else if (error.includes('not found')) {
-        // Host not registered — setup issue. Stay in native mode so the user sees the error.
-        console.log('Chessist SW: Native host not found — install.bat may not have been run correctly');
-        reconnectAttempts = 0; // No point retrying; won't succeed until setup is fixed
-      } else if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        // Attempt to reconnect for temporary failures
-        reconnectAttempts++;
-        console.log(`Chessist SW: Reconnection attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
-        reconnectTimer = setTimeout(() => {
-          connectNative();
-        }, 1000 * reconnectAttempts); // Exponential backoff
-      } else {
-        console.log('Chessist SW: Max reconnection attempts reached, falling back to WASM');
-        engineSource = 'wasm';
-        chrome.storage.sync.set({ engineSource: 'wasm' });
-        reconnectAttempts = 0;
-        chrome.runtime.sendMessage({ type: 'ENGINE_SOURCE_CHANGED', source: 'wasm' }).catch(() => {});
-      }
-    });
-
-    // Start watchdog timer to detect unresponsive engine
-    // Use longer timeout for deep analysis (depth 24+ can take time)
-    lastNativeResponseTime = Date.now();
-    if (!nativeWatchdogTimer) {
-      nativeWatchdogTimer = setInterval(() => {
-        if (nativeConnected && Date.now() - lastNativeResponseTime > 30000) {
-          console.log('Chessist SW: Native engine unresponsive, reconnecting...');
-          disconnectNative();
-          setTimeout(connectNative, 1000);
-        }
-      }, 10000);
-    }
-
-  } catch (e) {
-    console.error('Chessist SW: Failed to connect native:', e);
-    nativePort = null;
-    nativeConnected = false;
-  }
-}
-
-// Disconnect native host
-function disconnectNative() {
-  if (nativePort) {
-    try {
-      nativePort.disconnect();
-    } catch (e) {
-      console.log('Chessist SW: Error disconnecting native port:', e);
-    }
-    nativePort = null;
-    nativeConnected = false;
-    nativePath = null;
-    analysisEvalFen = null;
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-}
-
-// Safe postMessage wrapper with null check
-function sendToNativePort(message) {
-  if (!nativePort) {
-    console.warn('Chessist SW: Native port is null, dropping message (reconnection handled by onDisconnect)');
-    return false;
-  }
-  
-  try {
-    nativePort.postMessage(message);
-    return true;
-  } catch (e) {
-    console.error('Chessist SW: Failed to send message to native port:', e);
-    // Port might be in invalid state, disconnect and reconnect
-    disconnectNative();
-    if (engineSource === 'native') {
-      setTimeout(connectNative, 1000);
-    }
-    return false;
-  }
-}
-
-// Handle messages from native host
-function handleNativeMessage(message) {
-  // Reset watchdog timer on any response
-  lastNativeResponseTime = Date.now();
-
-  if (message.type === 'started') {
-    nativeConnected = true;
-    nativePath = message.path;
-    reconnectAttempts = 0; // Reset on successful connection
-    console.log('Chessist SW: Native Stockfish started:', message.path);
-    chrome.storage.sync.get(['overlayMode']).then(s => {
-      if (s.overlayMode) sendToNativePort({ type: 'start_overlay' });
-    });
-  }
-  else if (message.type === 'ready') {
-    console.log('Chessist SW: Native Stockfish ready');
-    chrome.storage.sync.get(['skillLevel', 'showAltArrows']).then(settings => {
-      const level = settings.skillLevel ?? 20;
-      if (level < 20) {
-        sendToNativePort({ type: 'set_option', name: 'Skill Level', value: level });
-      }
-      const multiPv = settings.showAltArrows !== false ? 3 : 1;
-      sendToNativePort({ type: 'set_option', name: 'MultiPV', value: multiPv });
-    });
-  }
-  else if (message.type === 'analyzing') {
-    console.log('Chessist SW: Analyzing position:', message.fen, 'depth:', message.depth);
-  }
-  else if (message.type === 'eval') {
-    // IMPORTANT: Ignore stale results if analysisEvalFen was cleared (position changed)
-    if (!analysisEvalFen) {
-      console.log('Chessist SW: Ignoring stale eval result (position changed)');
-      return;
-    }
-
-    lastEvaluation = message.data;
-    // Reset stuck detection on any eval result (engine is still working)
-    analysisStartTime = Date.now();
-    // Add turn info from the FEN being evaluated (use analysisEvalFen to avoid race conditions)
-    const fenParts = analysisEvalFen.split(' ');
-    lastEvaluation.turn = fenParts[1] || 'w';
-    lastEvaluation.fen = analysisEvalFen;
-    // multiPvMoves is already set by the Python host (slot-1 only messages)
-
-    broadcastToContentScripts({
-      type: 'EVAL_RESULT',
-      evaluation: lastEvaluation
-    });
-  }
-  else if (message.type === 'bestmove') {
-    // IMPORTANT: Ignore stale bestmove if analysisEvalFen was cleared (position changed)
-    if (!analysisEvalFen) {
-      console.log('Chessist SW: Ignoring stale bestmove (position changed)');
-      return;
-    }
-
-    lastBestMove = message.move;
-    analysisStartTime = 0;  // Analysis completed, reset stuck detection timer
-    if (lastEvaluation) {
-      lastEvaluation.bestMove = message.move;
-      // Cache the completed evaluation (with bestMove and PV)
-      cacheEvaluation(analysisEvalFen, lastEvaluation);
-      broadcastToContentScripts({
-        type: 'EVAL_RESULT',
-        evaluation: lastEvaluation
-      });
-    }
-  }
-  else if (message.type === 'error') {
-    console.error('Chessist SW: Native error:', message.message);
-  }
-  else if (message.type === 'debug') {
-    console.log('Chessist SW: [Python]', message.message);
-  }
-}
 
 // Offscreen document readiness tracking
 let offscreenReady = false;
@@ -713,6 +503,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // WS engine eval arrived in content script — update SW state + push to popup only (no content re-broadcast)
+  if (message.type === 'WS_EVAL_UPDATE') {
+    lastEvaluation = message.evaluation;
+    chrome.runtime.sendMessage({ type: 'EVAL_RESULT', evaluation: message.evaluation }).catch(() => {});
+    return;
+  }
+
   if (message.type === 'EVAL_UPDATE') {
     // Check if this evaluation is for the current position
     if (message.evaluation.fen && currentEvalFen) {
@@ -754,132 +551,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  if (message.type === 'SET_MULTIPV') {
-    const multiPv = message.value || 1;
-    if (engineSource === 'native' && nativePort && nativeConnected) {
-      sendToNativePort({ type: 'set_option', name: 'MultiPV', value: multiPv });
-    } else {
-      chrome.runtime.sendMessage({ type: 'SET_MULTIPV', value: multiPv }).catch(() => {});
-    }
+  if (message.type === 'LAUNCH_ENGINE') {
+    connectNative();
+    nativePort?.postMessage({ type: 'launch', debug: message.debug || false });
     sendResponse({ success: true });
     return true;
-  }
-
-  if (message.type === 'SET_OVERLAY_MODE') {
-    if (nativePort && nativeConnected) {
-      sendToNativePort({ type: message.enabled ? 'start_overlay' : 'stop_overlay' });
-    }
-    return;
   }
 
   if (message.type === 'RESTART_OVERLAY') {
-    if (nativePort && nativeConnected) {
-      sendToNativePort({ type: 'stop_overlay' });
-      setTimeout(() => sendToNativePort({ type: 'start_overlay', debug: message.debug === true }), 500);
-    }
-    return;
-  }
-
-  if (message.type === 'SET_ENGINE_SOURCE') {
-    engineSource = message.source;
-    reconnectAttempts = 0; // Reset attempts on manual source change
-    if (engineSource === 'native') {
-      connectNative();
-    } else {
-      disconnectNative();
-    }
+    connectNative();
+    nativePort?.postMessage({ type: 'restart', debug: message.debug || false });
     sendResponse({ success: true });
     return true;
   }
 
-  if (message.type === 'CHECK_NATIVE_STATUS') {
-    if (engineSource !== 'native') {
-      sendResponse({ connected: false, error: 'Native engine not selected' });
-    } else if (nativeConnected) {
-      sendResponse({ connected: true, path: nativePath });
-    } else {
-      connectNative(); // Try to connect
-      setTimeout(() => {
-        sendResponse({
-          connected: nativeConnected,
-          path: nativePath,
-          error: nativeConnected ? null : (nativeLastError || 'Failed to connect - run install.bat')
-        });
-      }, 1000);
-      return true;
-    }
+  if (message.type === 'KILL_ENGINE') {
+    connectNative();
+    nativePort?.postMessage({ type: 'kill' });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'SET_MULTIPV') {
+    const multiPv = message.value || 1;
+    chrome.runtime.sendMessage({ type: 'SET_MULTIPV', value: multiPv }).catch(() => {});
+    sendResponse({ success: true });
     return true;
   }
 
   if (message.type === 'GET_LAST_EVAL') {
-    // Return the last evaluation for popup display
     sendResponse({ evaluation: lastEvaluation });
     return true;
   }
 
   if (message.type === 'SET_DEPTH') {
     cachedEngineDepth = message.depth || 18;
-    if (engineSource === 'native' && nativePort) {
-      sendToNativePort({ type: 'set_option', name: 'Depth', value: message.depth });
-    }
     sendResponse({ success: true });
     return true;
   }
 
   if (message.type === 'SET_SKILL_LEVEL') {
-    // Forward skill level to native Stockfish (UCI option)
-    if (engineSource === 'native' && nativePort) {
-      sendToNativePort({ type: 'set_option', name: 'Skill Level', value: message.level });
-    }
+    chrome.runtime.sendMessage({ type: 'SET_SKILL_LEVEL', level: message.level }).catch(() => {});
     sendResponse({ success: true });
     return true;
   }
 
   if (message.type === 'SET_ELO') {
-    const elo = message.elo; // null = disable ELO limiting
-    if (engineSource === 'native' && nativePort) {
-      if (elo) {
-        sendToNativePort({ type: 'set_option', name: 'UCI_LimitStrength', value: 'true' });
-        sendToNativePort({ type: 'set_option', name: 'UCI_Elo', value: elo });
-        console.log('Chessist SW: Set native ELO to', elo);
-      } else {
-        sendToNativePort({ type: 'set_option', name: 'UCI_LimitStrength', value: 'false' });
-      }
-    } else {
-      // WASM engine via offscreen document
-      chrome.runtime.sendMessage({ type: 'SET_ELO', elo }).catch(() => {});
-    }
+    chrome.runtime.sendMessage({ type: 'SET_ELO', elo: message.elo }).catch(() => {});
     sendResponse({ success: true });
     return true;
   }
 
   if (message.type === 'STOP_ANALYSIS') {
-    // Stop current analysis (but don't reset caches)
-    if (engineSource === 'native' && nativePort) {
-      sendToNativePort({ type: 'stop' });
-    } else {
-      // Send stop to offscreen document
-      chrome.runtime.sendMessage({ type: 'STOP' }).catch(() => {});
-    }
-    // Clear the current analysis FEN to ignore incoming results
-    analysisEvalFen = null;
+    chrome.runtime.sendMessage({ type: 'STOP' }).catch(() => {});
     console.log('Chessist SW: Analysis stopped');
     sendResponse({ success: true });
     return true;
   }
 
   if (message.type === 'RESET_ENGINE') {
-    // Reset the engine (clear hash tables, stop analysis)
-    if (engineSource === 'native' && nativePort) {
-      sendToNativePort({ type: 'reset' });
-    } else {
-      // Send reset to offscreen document
-      chrome.runtime.sendMessage({ type: 'RESET' }).catch(() => {});
-    }
-    // Clear all cached evaluations
+    chrome.runtime.sendMessage({ type: 'RESET' }).catch(() => {});
     lastEvaluation = null;
     lastBestMove = null;
-    analysisEvalFen = null;
+    currentEvalFen = null;
     positionCache.clear();
     pvCache = { fen: null, pv: [], depth: 0, score: 0, isMate: false, timestamp: 0 };
     console.log('Chessist SW: Engine and caches reset');
@@ -888,55 +622,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'FORCE_RESTART_ENGINE') {
-    // Force restart - completely disconnect and reconnect native, or recreate WASM offscreen doc
-    console.log('Chessist SW: Force restarting engine...');
-
-    // Clear all state
+    console.log('Chessist SW: Force restarting WASM engine...');
     lastEvaluation = null;
     lastBestMove = null;
-    analysisEvalFen = null;
-    analysisStartTime = 0;
     currentEvalFen = null;
-    pendingNativeFen = null;
     positionCache.clear();
     pvCache = { fen: null, pv: [], depth: 0, score: 0, isMate: false, timestamp: 0 };
-
-    if (nativeEvalTimeout) {
-      clearTimeout(nativeEvalTimeout);
-      nativeEvalTimeout = null;
-    }
-
-    if (engineSource === 'native') {
-      // Force disconnect and reconnect native
-      disconnectNative();
-      reconnectAttempts = 0;
-      setTimeout(() => {
-        connectNative();
-        sendResponse({ success: true, message: 'Native engine restarting...' });
-      }, 500);
-    } else {
-      // Force recreate WASM offscreen document
-      offscreenDocumentCreated = false;
-      try {
-        chrome.offscreen.closeDocument().catch(() => {});
-      } catch (e) {}
-      setTimeout(async () => {
-        await ensureOffscreenDocument();
-        sendResponse({ success: true, message: 'WASM engine restarting...' });
-      }, 500);
-    }
+    offscreenDocumentCreated = false;
+    try { chrome.offscreen.closeDocument().catch(() => {}); } catch (e) {}
+    setTimeout(async () => {
+      await ensureOffscreenDocument();
+      sendResponse({ success: true, message: 'WASM engine restarting...' });
+    }, 500);
     return true;
   }
 
   return false;
 });
 
-// Handle evaluation request
+// Handle evaluation request (WASM fallback — Chessist Engine handles via WS when connected)
 async function handleEvaluateRequest(fen, isMouseRelease, tabId, sendResponse) {
   const depth = cachedEngineDepth;
-  const source = engineSource;
-
-  // Track current FEN being evaluated (for turn info in results)
   currentEvalFen = fen;
 
   // === CACHE CHECKS ===
@@ -967,79 +673,8 @@ async function handleEvaluateRequest(fen, isMouseRelease, tabId, sendResponse) {
     return; // Full cache hit at required depth, no need to re-analyze
   }
 
-  // If we had a PV hit but need deeper analysis, or no cache at all, continue...
-
-  if (source === 'native' && nativePort && nativeConnected) {
-    // Check if already analyzing this exact position
-    if (fen === analysisEvalFen && !nativeEvalTimeout) {
-      // Check if analysis has been stuck for too long
-      const analysisDuration = Date.now() - analysisStartTime;
-      if (analysisDuration > STUCK_ANALYSIS_TIMEOUT_MS) {
-        console.log('Chessist SW: Analysis appears stuck for', Math.round(analysisDuration / 1000), 's, forcing restart');
-        // Force restart the analysis
-        sendToNativePort({ type: 'stop' });
-        analysisEvalFen = null;
-        analysisStartTime = 0;
-        // Continue to re-evaluate below
-      } else {
-        console.log('Chessist SW: Already analyzing this position');
-        sendResponse({ evaluation: lastEvaluation || { cp: 0 } });
-        return;
-      }
-    }
-
-    // IMPORTANT: Set analysisEvalFen to the NEW fen immediately
-    // This ensures:
-    // 1. Old results (for old FEN) are filtered out by content script (FEN mismatch)
-    // 2. New results (for new FEN) are accepted immediately
-    // Don't set to null - that causes valid new results to be ignored during race conditions
-    const previousFen = analysisEvalFen;
-    analysisEvalFen = fen;  // Track what we're actually analyzing - set BEFORE stop
-    analysisStartTime = Date.now();
-
-    // Stop previous analysis if there was one
-    if (previousFen && previousFen !== fen) {
-      sendToNativePort({ type: 'stop' });
-      console.log('Chessist SW: Position changed, stopping previous analysis');
-    }
-
-    // Cancel any pending debounce (in case there was one)
-    if (nativeEvalTimeout) {
-      clearTimeout(nativeEvalTimeout);
-      nativeEvalTimeout = null;
-    }
-
-    // NO DEBOUNCE - Send immediately to native engine
-    console.log('Chessist SW: Evaluating with native Stockfish:', fen.substring(0, 40));
-    lastNativeResponseTime = Date.now();  // Reset watchdog when sending command
-
-    // Use safe wrapper to send message
-    const sent = sendToNativePort({ type: 'evaluate', fen: fen, depth: depth });
-
-    if (!sent) {
-      // If sending failed, fall back to WASM for this request
-      console.log('Chessist SW: Native send failed, using WASM for this evaluation');
-      analysisEvalFen = null;
-      handleWasmEvaluation(fen, depth, sendResponse);
-    }
-
-    // Wait for evaluation with timeout
-    const id = ++requestId;
-    pendingRequests.set(id, { tabId, sendResponse });
-
-    setTimeout(() => {
-      if (lastEvaluation) {
-        sendResponse({ evaluation: lastEvaluation });
-      } else {
-        sendResponse({ evaluation: { cp: 0 } });
-      }
-      pendingRequests.delete(id);
-    }, 3000);
-
-  } else {
-    // Use WASM Stockfish
-    await handleWasmEvaluation(fen, depth, sendResponse);
-  }
+  // Use WASM Stockfish (Chessist Engine handles eval directly via WS when running)
+  await handleWasmEvaluation(fen, depth, sendResponse);
 }
 
 // Separate WASM evaluation handler
@@ -1109,14 +744,10 @@ async function broadcastToContentScripts(message) {
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('Chessist installed, reason:', details.reason);
 
-  // Get existing settings to preserve user preferences
-  const existing = await chrome.storage.sync.get(['enabled', 'showBestMove', 'engineDepth', 'engineSource']);
-
-  // Only set defaults for missing values (preserves user preferences on updates)
+  const existing = await chrome.storage.sync.get(['enabled', 'showBestMove', 'engineDepth']);
   await chrome.storage.sync.set({
     enabled: existing.enabled ?? true,
     showBestMove: existing.showBestMove ?? false,
     engineDepth: existing.engineDepth ?? 18,
-    engineSource: existing.engineSource ?? 'wasm'
   });
 });

@@ -2,8 +2,8 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
-    <AssemblyName>ChessistOverlay</AssemblyName>
-    <RootNamespace>ChessistOverlay</RootNamespace>
+    <AssemblyName>ChessistEngine</AssemblyName>
+    <RootNamespace>ChessistEngine</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>

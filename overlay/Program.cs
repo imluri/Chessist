@@ -1,14 +1,16 @@
-// Chessist Overlay — C# / .NET 4.8 / GDI+
-// Transparent click-through window, excluded from screen capture.
+// Chessist Engine — C# / .NET 4.8 / GDI+
+// Transparent overlay window + integrated Stockfish engine.
 // WebSocket server on ws://127.0.0.1:27301
 // Build:  dotnet build -c Release
-//         output: overlay\bin\Release\net48\ChessistOverlay.exe
+//         output: overlay\bin\Release\net48\ChessistEngine.exe
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Net;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
@@ -19,7 +21,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace ChessistOverlay
+namespace ChessistEngine
 {
     // ── JSON data contracts ──────────────────────────────────────────────────────
 
@@ -39,6 +41,7 @@ namespace ChessistOverlay
     // JS sends raw viewport-relative CSS coords; C# resolves screen position via ClientToScreen.
     [DataContract] class WsMsg
     {
+        // Overlay display fields
         [DataMember(Name = "visible")]      public bool        Visible;
         [DataMember(Name = "positionOnly")] public bool        PositionOnly;
         [DataMember(Name = "flipped")]      public bool        Flipped;
@@ -52,6 +55,43 @@ namespace ChessistOverlay
         [DataMember(Name = "manualMap")]    public bool        ManualMap;
         [DataMember(Name = "offsetX")]      public int         OffsetX;
         [DataMember(Name = "offsetY")]      public int         OffsetY;
+
+        // Engine control fields (type != null → engine message, not overlay update)
+        [DataMember(Name = "type",    EmitDefaultValue = false)] public string? Type;
+        [DataMember(Name = "fen",     EmitDefaultValue = false)] public string? Fen;
+        [DataMember(Name = "depth",   EmitDefaultValue = false)] public int     Depth;
+        [DataMember(Name = "multiPv", EmitDefaultValue = false)] public int     MultiPv;
+        [DataMember(Name = "name",    EmitDefaultValue = false)] public string? Name;
+        [DataMember(Name = "value",   EmitDefaultValue = false)] public string? Value;
+        [DataMember(Name = "turn",    EmitDefaultValue = false)] public string? Turn;
+    }
+
+    // Eval result broadcast to extension clients
+    [DataContract] class EvalData
+    {
+        [DataMember(Name = "depth")]                                 public int      Depth;
+        [DataMember(Name = "cp",           EmitDefaultValue = false)] public int?    Cp;
+        [DataMember(Name = "mate",         EmitDefaultValue = false)] public int?    Mate;
+        [DataMember(Name = "bestMove",     EmitDefaultValue = false)] public string? BestMove;
+        [DataMember(Name = "pv",           EmitDefaultValue = false)] public string[]? Pv;
+        [DataMember(Name = "nps",          EmitDefaultValue = false)] public long?   Nps;
+        [DataMember(Name = "multipv")]                               public int      Multipv = 1;
+        [DataMember(Name = "multiPvMoves", EmitDefaultValue = false)] public string[]? MultiPvMoves;
+        [DataMember(Name = "fen",          EmitDefaultValue = false)] public string? Fen;
+        [DataMember(Name = "turn",         EmitDefaultValue = false)] public string? Turn;
+    }
+
+    [DataContract] class EvalResponse
+    {
+        [DataMember(Name = "type")] public string  Type = "eval";
+        [DataMember(Name = "data")] public EvalData? Data;
+    }
+
+    [DataContract] class EngineStatusMsg
+    {
+        [DataMember(Name = "type")]                                public string  Type = "engine_status";
+        [DataMember(Name = "status")]                              public string? Status;
+        [DataMember(Name = "message", EmitDefaultValue = false)]   public string? Message;
     }
 
     // ── Win32 P/Invoke ────────────────────────────────────────────────────────────
@@ -72,7 +112,7 @@ namespace ChessistOverlay
         public uint   biCompression, biSizeImage;
         public int    biXPelsPerMeter, biYPelsPerMeter;
         public uint   biClrUsed, biClrImportant;
-        public uint   bmiColors; // no color table for 32 bpp
+        public uint   bmiColors;
     }
 
     // ── Overlay window ────────────────────────────────────────────────────────────
@@ -110,26 +150,25 @@ namespace ChessistOverlay
 
         WsMsg? _state;
         System.Windows.Forms.Timer? _trackTimer;
-        IntPtr _cachedRenderWnd;  // Chrome_RenderWidgetHostHWND — cached to avoid full EnumChildWindows each tick
-        POINT  _lastOrigin;       // last ClientToScreen result — skip Blit if unchanged
-        bool   _stateDirty;       // new WS message arrived — force repaint even if origin unchanged
-        bool   _isBlank;          // true after Blank() so the 16ms timer doesn't re-blit a transparent frame
-        IntPtr _lastFgWnd;        // cached foreground window — only re-check IsActualBrowser when it changes
+        IntPtr _cachedRenderWnd;
+        POINT  _lastOrigin;
+        bool   _stateDirty;
+        bool   _isBlank;
+        IntPtr _lastFgWnd;
         bool   _lastFgIsBrowser;
 
-        // Manual mapping — loaded from INI, updated via WS, persisted back to INI
         bool _manualMap;
         int  _manualOffsetX;
         int  _manualOffsetY;
 
-        static string IniPath => System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistOverlay.ini");
+        static string IniPath => Path.Combine(
+            Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistEngine.ini");
 
         static void ReadIni(out bool manualMap, out int offsetX, out int offsetY)
         {
             manualMap = false; offsetX = 0; offsetY = 0;
-            if (!System.IO.File.Exists(IniPath)) return;
-            foreach (var line in System.IO.File.ReadAllLines(IniPath))
+            if (!File.Exists(IniPath)) return;
+            foreach (var line in File.ReadAllLines(IniPath))
             {
                 var kv = line.Split('=');
                 if (kv.Length != 2) continue;
@@ -144,7 +183,7 @@ namespace ChessistOverlay
 
         static void WriteIni(bool manualMap, int offsetX, int offsetY)
         {
-            System.IO.File.WriteAllText(IniPath,
+            File.WriteAllText(IniPath,
                 $"[ManualMap]\nenabled={manualMap.ToString().ToLower()}\noffsetX={offsetX}\noffsetY={offsetY}\n");
         }
 
@@ -175,12 +214,11 @@ namespace ChessistOverlay
 
             ReadIni(out _manualMap, out _manualOffsetX, out _manualOffsetY);
 
-            // Re-query ClientToScreen at ~60 fps so the overlay tracks window drags live.
             _trackTimer = new System.Windows.Forms.Timer { Interval = 16 };
             _trackTimer.Tick += (_, _) => Redraw();
             _trackTimer.Start();
 
-            Blank(); // start transparent
+            Blank();
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -189,15 +227,13 @@ namespace ChessistOverlay
             base.OnFormClosed(e);
         }
 
-        // Electron apps (VS Code, Discord, Slack…) share Chrome's window class names,
-        // so we verify by process name before caching a render widget handle.
         static readonly uint _selfPid = (uint)Process.GetCurrentProcess().Id;
 
         static bool IsActualBrowser(IntPtr hwnd)
         {
             if (hwnd == IntPtr.Zero) return false;
             GetWindowThreadProcessId(hwnd, out uint pid);
-            if (pid == _selfPid) return true; // our own console / log window — never hide
+            if (pid == _selfPid) return true;
             try
             {
                 using var proc = Process.GetProcessById((int)pid);
@@ -207,7 +243,6 @@ namespace ChessistOverlay
             catch { return false; }
         }
 
-        // Called from WebSocket thread
         public void Apply(WsMsg msg)
         {
             if (InvokeRequired) { Invoke((Action<WsMsg>)Apply, msg); return; }
@@ -223,7 +258,11 @@ namespace ChessistOverlay
             }
             else
             {
+                // Preserve previous arrows when the update carries no arrows (e.g. sub-depth eval
+                // bar update) but the overlay is still visible — avoids blanking arrows mid-analysis.
+                var prevArrows = (msg.Visible && msg.Arrows == null && _state != null) ? _state.Arrows : null;
                 _state = msg;
+                if (prevArrows != null) _state.Arrows = prevArrows;
                 if (_manualMap != msg.ManualMap || _manualOffsetX != msg.OffsetX || _manualOffsetY != msg.OffsetY)
                 {
                     _manualMap    = msg.ManualMap;
@@ -244,13 +283,10 @@ namespace ChessistOverlay
                 Blank(); return;
             }
 
-            // Hide when the browser isn't the foreground window (catches missed JS focus events)
             IntPtr fg = GetForegroundWindow();
             if (fg != _lastFgWnd) { _lastFgWnd = fg; _lastFgIsBrowser = IsActualBrowser(fg); }
             if (!_lastFgIsBrowser) { Blank(); return; }
 
-            // Get the physical screen origin of Chrome's web content area.
-            // Only search inside actual browser processes — prevents VS Code/Electron contamination.
             if (_cachedRenderWnd == IntPtr.Zero || !IsWindow(_cachedRenderWnd))
                 _cachedRenderWnd = FindRenderWidget(fg);
 
@@ -259,7 +295,7 @@ namespace ChessistOverlay
                 ClientToScreen(_cachedRenderWnd, ref origin);
 
             bool moved = origin.X != _lastOrigin.X || origin.Y != _lastOrigin.Y;
-            if (!moved && !_stateDirty) return; // nothing changed — skip expensive Blit
+            if (!moved && !_stateDirty) return;
 
             _lastOrigin  = origin;
             _stateDirty  = false;
@@ -291,7 +327,6 @@ namespace ChessistOverlay
 
                 if (_state.Arrows != null)
                 {
-                    // draw least-important first so best move renders on top
                     for (int i = _state.Arrows.Length - 1; i >= 0; i--)
                         DrawArrow(g, bx, by, bw, bh, _state.Flipped, _state.Arrows[i], i);
                 }
@@ -314,8 +349,6 @@ namespace ChessistOverlay
             Blit(bmp, vs.Left, vs.Top);
         }
 
-        // Enumerates all top-level windows to find a browser render widget.
-        // Used as fallback when the foreground window is not a browser (e.g. user alt-tabbed).
         IntPtr FindAnyBrowserRenderWidget()
         {
             IntPtr found = IntPtr.Zero;
@@ -329,7 +362,6 @@ namespace ChessistOverlay
             return found;
         }
 
-        // Walks all child windows looking for Chrome's render widget (the actual web viewport HWND).
         static IntPtr FindRenderWidget(IntPtr parent)
         {
             IntPtr found = IntPtr.Zero;
@@ -341,7 +373,7 @@ namespace ChessistOverlay
                 if (sb.ToString() == "Chrome_RenderWidgetHostHWND")
                 {
                     found = hwnd;
-                    return false; // stop
+                    return false;
                 }
                 return true;
             };
@@ -353,7 +385,7 @@ namespace ChessistOverlay
         {
             if (_isBlank) return;
             _isBlank    = true;
-            _lastOrigin = default; // force full repaint when visible again
+            _lastOrigin = default;
             _stateDirty = true;
             var vs = SystemInformation.VirtualScreen;
             using var bmp = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppArgb);
@@ -375,7 +407,6 @@ namespace ChessistOverlay
             }
         }
 
-
         // ── Drawing ───────────────────────────────────────────────────────────────
 
         static void DrawEvalBar(Graphics g, float bx, float by, float bh, EvalBarMsg eval)
@@ -383,21 +414,17 @@ namespace ChessistOverlay
             const float W = 20f, GAP = 4f;
             float x = bx - W - GAP;
 
-            // Background
             using var bgBrush = new SolidBrush(Color.FromArgb(180, 20, 20, 20));
             g.FillRectangle(bgBrush, x, by, W, bh);
 
-            // White/black fill
             float fill = (float)(eval.FillPercent / 100.0 * bh);
             float whiteH = eval.IsFlipped ? bh - fill : fill;
             float whiteY = eval.IsFlipped ? by : by + bh - fill;
             g.FillRectangle(Brushes.White, x, whiteY, W, whiteH);
 
-            // Border
             using var borderPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f);
             g.DrawRectangle(borderPen, x, by, W, bh);
 
-            // Score label
             if (!string.IsNullOrEmpty(eval.Score))
             {
                 using var font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
@@ -410,9 +437,9 @@ namespace ChessistOverlay
 
         static readonly Color[] ArrowClr =
         {
-            Color.FromArgb(210, 121, 42, 158),  // purple  — best
-            Color.FromArgb(140, 184, 160,   0), // yellow  — 2nd
-            Color.FromArgb(110, 184,  64,   0), // red     — 3rd
+            Color.FromArgb(210, 121, 42, 158),
+            Color.FromArgb(140, 184, 160,   0),
+            Color.FromArgb(110, 184,  64,   0),
         };
         static readonly float[] ArrowW = { 2.2f, 1.8f, 1.6f };
 
@@ -434,13 +461,11 @@ namespace ChessistOverlay
             float headLen = sqSz * 0.38f;
             float hw      = headLen * 0.44f;
 
-            // Shaft (shortened so arrowhead doesn't overlap)
             var shaft = new PointF(to.X - ux * headLen * 0.75f, to.Y - uy * headLen * 0.75f);
             using (var pen = new Pen(c, lw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                 g.DrawLine(pen, from, shaft);
 
-            // Arrowhead triangle
-            float px = -uy, py = ux; // perpendicular unit vector
+            float px = -uy, py = ux;
             PointF[] head =
             {
                 to,
@@ -453,8 +478,8 @@ namespace ChessistOverlay
 
         static PointF SquareCenter(string sq, float bx, float by, float bw, float bh, bool flipped)
         {
-            int file = sq[0] - 'a'; // 0 = a … 7 = h
-            int rank = sq[1] - '1'; // 0 = rank 1 … 7 = rank 8
+            int file = sq[0] - 'a';
+            int rank = sq[1] - '1';
             float col = flipped ? 7 - file : file;
             float row = flipped ? rank : 7 - rank;
             return new PointF(bx + (col + 0.5f) * (bw / 8f), by + (row + 0.5f) * (bh / 8f));
@@ -464,7 +489,6 @@ namespace ChessistOverlay
 
         void Blit(Bitmap bmp, int x, int y)
         {
-            // Lock bits (straight ARGB)
             var bd = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
                 ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             int bytes = Math.Abs(bd.Stride) * bd.Height;
@@ -472,22 +496,20 @@ namespace ChessistOverlay
             Marshal.Copy(bd.Scan0, pixels, 0, bytes);
             bmp.UnlockBits(bd);
 
-            // Premultiply alpha (required by UpdateLayeredWindow)
             for (int i = 0; i < pixels.Length; i += 4)
             {
                 byte a = pixels[i + 3];
                 if (a == 255) continue;
-                pixels[i + 0] = (byte)(pixels[i + 0] * a / 255); // B
-                pixels[i + 1] = (byte)(pixels[i + 1] * a / 255); // G
-                pixels[i + 2] = (byte)(pixels[i + 2] * a / 255); // R
+                pixels[i + 0] = (byte)(pixels[i + 0] * a / 255);
+                pixels[i + 1] = (byte)(pixels[i + 1] * a / 255);
+                pixels[i + 2] = (byte)(pixels[i + 2] * a / 255);
             }
 
-            // Create GDI DIBSECTION and copy premultiplied pixels in
             var bi = new BITMAPINFO
             {
                 biSize     = (uint)Marshal.SizeOf(typeof(BITMAPINFO)),
                 biWidth    = bmp.Width,
-                biHeight   = -bmp.Height, // top-down
+                biHeight   = -bmp.Height,
                 biPlanes   = 1,
                 biBitCount = 32,
             };
@@ -521,6 +543,321 @@ namespace ChessistOverlay
         }
     }
 
+    // ── Stockfish manager ─────────────────────────────────────────────────────────
+
+    sealed class StockfishManager : IDisposable
+    {
+        static readonly string[] _sfCandidates =
+        {
+            // Relative to exe directory
+            "stockfish.exe",
+            @"stockfish\stockfish.exe",
+            @"..\..\..\..\native-host\stockfish.exe",
+            // Common Windows install paths
+            @"C:\Program Files\Stockfish\stockfish.exe",
+            @"C:\Program Files (x86)\Stockfish\stockfish.exe",
+            @"C:\stockfish\stockfish.exe",
+        };
+
+        Process?  _sf;
+        StreamWriter? _sfIn;
+        Thread?   _readerThread;
+        volatile bool   _running;
+        volatile bool   _isDisposing;
+        volatile string? _currentFen;
+        volatile string? _currentTurn;
+        volatile int    _currentMultiPv = 1;
+        volatile int    _lastMultiPv    = 1;
+
+        // Multi-PV buffering: depth → (multipv slot → EvalData)
+        readonly Dictionary<int, Dictionary<int, EvalData>> _pvBuf = new();
+        readonly object _pvLock = new();
+
+        // Serializers
+        static readonly DataContractJsonSerializer _evalSer   = new(typeof(EvalResponse));
+        static readonly DataContractJsonSerializer _statusSer = new(typeof(EngineStatusMsg));
+
+        public Func<string, Task>? BroadcastAsync;
+
+        public bool TryStart()
+        {
+            string? path = FindStockfish();
+            if (path == null)
+            {
+                DebugLog.Write("StockfishManager: stockfish.exe not found in any known location");
+                SendStatus("error", "Stockfish not found. Install Stockfish and add to PATH.");
+                return false;
+            }
+
+            DebugLog.Write($"StockfishManager: starting {path}");
+            try
+            {
+                _sf = new Process
+                {
+                    StartInfo = new ProcessStartInfo(path)
+                    {
+                        UseShellExecute        = false,
+                        RedirectStandardInput  = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError  = true,
+                        CreateNoWindow         = true,
+                    }
+                };
+                _sf.Start();
+                _sfIn = _sf.StandardInput;
+                _sfIn.AutoFlush = true;
+
+                // UCI handshake
+                _sfIn.WriteLine("uci");
+                string? line;
+                while ((line = _sf.StandardOutput.ReadLine()) != null)
+                {
+                    if (line == "uciok") break;
+                }
+                _sfIn.WriteLine("setoption name MultiPV value 1");
+                _sfIn.WriteLine("isready");
+                while ((line = _sf.StandardOutput.ReadLine()) != null)
+                {
+                    if (line == "readyok") break;
+                }
+
+                _running = true;
+                _readerThread = new Thread(ReaderLoop) { IsBackground = true, Name = "StockfishReader" };
+                _readerThread.Start();
+
+                DebugLog.Write("StockfishManager: engine ready");
+                SendStatus("ready");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Write($"StockfishManager: failed to start — {ex.Message}");
+                SendStatus("error", ex.Message);
+                return false;
+            }
+        }
+
+        static string? FindStockfish()
+        {
+            string exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? ".";
+
+            foreach (var candidate in _sfCandidates)
+            {
+                string full = Path.IsPathRooted(candidate)
+                    ? candidate
+                    : Path.GetFullPath(Path.Combine(exeDir, candidate));
+                if (File.Exists(full)) return full;
+            }
+
+            // Search PATH
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (var dir in pathEnv.Split(';'))
+            {
+                string t = dir.Trim();
+                if (t.Length == 0) continue;
+                try
+                {
+                    string full = Path.Combine(t, "stockfish.exe");
+                    if (File.Exists(full)) return full;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        public void Evaluate(string fen, int depth, int multiPv)
+        {
+            if (!_running || _sfIn == null) return;
+
+            // Stop current analysis and give Stockfish a moment to flush
+            _sfIn.WriteLine("stop");
+            Thread.Sleep(20);
+
+            _currentFen  = fen;
+            var parts    = fen.Split(' ');
+            _currentTurn = parts.Length > 1 ? parts[1] : "w";
+            _currentMultiPv = multiPv > 0 ? multiPv : 1;
+            lock (_pvLock) _pvBuf.Clear();
+
+            if (_currentMultiPv != _lastMultiPv)
+            {
+                _sfIn.WriteLine($"setoption name MultiPV value {_currentMultiPv}");
+                _lastMultiPv = _currentMultiPv;
+            }
+
+            _sfIn.WriteLine($"position fen {fen}");
+            _sfIn.WriteLine($"go depth {depth}");
+        }
+
+        public void Stop()
+        {
+            if (_running) _sfIn?.WriteLine("stop");
+        }
+
+        public void SetOption(string name, string value)
+        {
+            if (!_running || _sfIn == null) return;
+            _sfIn.WriteLine($"setoption name {name} value {value}");
+            if (name.Equals("MultiPV", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(value, out int n))
+            {
+                _currentMultiPv = n;
+                _lastMultiPv    = n;
+            }
+        }
+
+        void ReaderLoop()
+        {
+            try
+            {
+                string? line;
+                while (_running && _sf != null && (line = _sf.StandardOutput.ReadLine()) != null)
+                    ParseLine(line);
+            }
+            catch { }
+            finally
+            {
+                _running = false;
+                DebugLog.Write("StockfishManager: reader loop exited");
+                if (!_isDisposing)
+                {
+                    DebugLog.Write("StockfishManager: unexpected exit, restarting in 1s");
+                    Thread.Sleep(1000);
+                    Task.Run(() => TryStart());
+                }
+            }
+        }
+
+        void ParseLine(string line)
+        {
+            if (line.StartsWith("info "))
+                ParseInfo(line);
+            // bestmove just confirms analysis complete; eval is already sent via info lines
+        }
+
+        void ParseInfo(string line)
+        {
+            var tokens = line.Split(' ');
+            int depth = 0, multipv = 1;
+            int cp = 0;  bool hasCp   = false;
+            int mate = 0; bool hasMate = false;
+            long nps = 0;
+            var pv = new List<string>();
+            bool inPv = false;
+
+            for (int i = 1; i < tokens.Length; i++)
+            {
+                switch (tokens[i])
+                {
+                    case "depth":
+                        if (++i < tokens.Length) int.TryParse(tokens[i], out depth);
+                        break;
+                    case "multipv":
+                        if (++i < tokens.Length) int.TryParse(tokens[i], out multipv);
+                        break;
+                    case "nps":
+                        if (++i < tokens.Length) long.TryParse(tokens[i], out nps);
+                        break;
+                    case "score":
+                        inPv = false;
+                        if (++i < tokens.Length)
+                        {
+                            if (tokens[i] == "cp" && ++i < tokens.Length)
+                                { hasCp = true; int.TryParse(tokens[i], out cp); }
+                            else if (tokens[i] == "mate" && ++i < tokens.Length)
+                                { hasMate = true; int.TryParse(tokens[i], out mate); }
+                        }
+                        break;
+                    case "pv":
+                        inPv = true;
+                        break;
+                    default:
+                        if (inPv) pv.Add(tokens[i]);
+                        break;
+                }
+            }
+
+            if (depth <= 0 || (!hasCp && !hasMate)) return;
+
+            var slot = new EvalData
+            {
+                Depth   = depth,
+                Cp      = hasCp   ? (int?)cp   : null,
+                Mate    = hasMate  ? (int?)mate : null,
+                Pv      = pv.Count > 0 ? pv.ToArray() : null,
+                Nps     = nps > 0 ? (long?)nps : null,
+                Multipv = multipv,
+                Fen     = _currentFen,
+                Turn    = _currentTurn,
+            };
+
+            EvalData? toSend = null;
+            lock (_pvLock)
+            {
+                if (!_pvBuf.TryGetValue(depth, out var depthBuf))
+                    _pvBuf[depth] = depthBuf = new Dictionary<int, EvalData>();
+                depthBuf[multipv] = slot;
+
+                int expected = _currentMultiPv;
+                if (depthBuf.Count >= expected && depthBuf.TryGetValue(1, out var s1))
+                {
+                    toSend = new EvalData
+                    {
+                        Depth    = s1.Depth,
+                        Cp       = s1.Cp,
+                        Mate     = s1.Mate,
+                        BestMove = s1.Pv?.Length > 0 ? s1.Pv[0] : null,
+                        Pv       = s1.Pv,
+                        Nps      = s1.Nps,
+                        Multipv  = expected,
+                        Fen      = s1.Fen,
+                        Turn     = s1.Turn,
+                    };
+                    if (expected > 1)
+                    {
+                        var alts = new List<string>();
+                        for (int s = 2; s <= expected; s++)
+                            if (depthBuf.TryGetValue(s, out var sn) && sn.Pv?.Length > 0)
+                                alts.Add(sn.Pv[0]);
+                        toSend.MultiPvMoves = alts.Count > 0 ? alts.ToArray() : null;
+                    }
+                }
+            }
+
+            if (toSend != null)
+                Task.Run(() => FireEval(toSend));
+        }
+
+        void FireEval(EvalData data)
+        {
+            var json = Serialize(_evalSer, new EvalResponse { Data = data });
+            BroadcastAsync?.Invoke(json);
+        }
+
+        void SendStatus(string status, string? message = null)
+        {
+            var json = Serialize(_statusSer, new EngineStatusMsg { Status = status, Message = message });
+            BroadcastAsync?.Invoke(json);
+        }
+
+        static string Serialize<T>(DataContractJsonSerializer ser, T obj)
+        {
+            using var ms = new MemoryStream();
+            ser.WriteObject(ms, obj);
+            return Encoding.UTF8.GetString(ms.ToArray());
+        }
+
+        public void Dispose()
+        {
+            _isDisposing = true;
+            _running = false;
+            try { _sfIn?.WriteLine("quit"); } catch { }
+            try { _sf?.Kill(); } catch { }
+            _sf?.Dispose();
+            _sfIn?.Dispose();
+        }
+    }
+
     // ── System tray ───────────────────────────────────────────────────────────────
 
     sealed class TrayApp : IDisposable
@@ -532,8 +869,8 @@ namespace ChessistOverlay
             Icon ico;
             try
             {
-                string iconPath = System.IO.Path.Combine(
-                    System.IO.Path.GetDirectoryName(Application.ExecutablePath)!,
+                string iconPath = Path.Combine(
+                    Path.GetDirectoryName(Application.ExecutablePath)!,
                     "..", "..", "..", "..", "icons", "icon16.png");
                 using var bmp = new Bitmap(iconPath);
                 ico = Icon.FromHandle(bmp.GetHicon());
@@ -547,12 +884,12 @@ namespace ChessistOverlay
                 catch { }
             });
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Quit Chessist Overlay", null, (_, _) => Application.Exit());
+            menu.Items.Add("Quit Chessist Engine", null, (_, _) => Application.Exit());
 
             _icon = new NotifyIcon
             {
                 Icon             = ico,
-                Text             = "Chessist Overlay",
+                Text             = "Chessist Engine",
                 ContextMenuStrip = menu,
                 Visible          = true,
             };
@@ -561,18 +898,16 @@ namespace ChessistOverlay
         public void Dispose() { _icon.Visible = false; _icon.Dispose(); }
     }
 
-    // ── WebSocket server ──────────────────────────────────────────────────────────
-
     // ── Debug logger ──────────────────────────────────────────────────────────────
 
     static class DebugLog
     {
         public static bool Enabled { get; private set; }
 
-        public static readonly string LogPath = System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistOverlay.log");
+        public static readonly string LogPath = Path.Combine(
+            Path.GetDirectoryName(Application.ExecutablePath)!, "ChessistEngine.log");
 
-        static System.IO.StreamWriter? _writer;
+        static StreamWriter? _writer;
 
         [DllImport("kernel32.dll")] static extern bool AllocConsole();
 
@@ -580,9 +915,9 @@ namespace ChessistOverlay
         {
             Enabled = true;
             AllocConsole();
-            Console.Title = "Chessist Overlay — Debug";
+            Console.Title = "Chessist Engine — Debug";
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("=== Chessist Overlay Debug ===");
+            Console.WriteLine("=== Chessist Engine Debug ===");
             Console.WriteLine($"WebSocket: ws://127.0.0.1:{WsServer.Port}");
             Console.WriteLine("Waiting for connection...\n");
             Console.ResetColor();
@@ -592,13 +927,13 @@ namespace ChessistOverlay
         {
             try
             {
-                _writer = new System.IO.StreamWriter(LogPath, append: false) { AutoFlush = true };
-                _writer.WriteLine($"=== Chessist Overlay Log — {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+                _writer = new StreamWriter(LogPath, append: false) { AutoFlush = true };
+                _writer.WriteLine($"=== Chessist Engine Log — {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
             }
             catch { }
         }
 
-        static void Log(string text, ConsoleColor conColor)
+        public static void Write(string text, ConsoleColor conColor = ConsoleColor.White)
         {
             _writer?.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}]  {text}");
             if (Enabled)
@@ -609,16 +944,16 @@ namespace ChessistOverlay
             }
         }
 
-        public static void Connect()    => Log("client connected",    ConsoleColor.Yellow);
-        public static void Disconnect() => Log("client disconnected", ConsoleColor.Red);
+        public static void Connect()    => Write("client connected",    ConsoleColor.Yellow);
+        public static void Disconnect() => Write("client disconnected", ConsoleColor.Red);
 
         static int      _msgCount;
         static int      _windowCount;
         static DateTime _window = DateTime.UtcNow;
 
-        public static void Message(string type, int bytes, bool posOnly)
+        public static void Message(string type, int bytes)
         {
-            if (!Enabled) return; // verbose — console/debug mode only
+            if (!Enabled) return;
             _msgCount++;
             _windowCount++;
 
@@ -634,7 +969,7 @@ namespace ChessistOverlay
 
             var color = type switch
             {
-                "eval"         => ConsoleColor.Green,
+                "evaluate"     => ConsoleColor.Green,
                 "positionOnly" => ConsoleColor.DarkGray,
                 _              => ConsoleColor.White,
             };
@@ -654,7 +989,7 @@ namespace ChessistOverlay
             if (throttle) _lastPosLog = now;
 
             string text = $"board  phys=({physX},{physY} {physW}x{physH})  origin=({originX},{originY})  view=({viewX:F1},{viewY:F1})  dpr={dpr:F2}";
-            Log(text, ConsoleColor.DarkCyan);
+            Write(text, ConsoleColor.DarkCyan);
         }
     }
 
@@ -663,10 +998,21 @@ namespace ChessistOverlay
     sealed class WsServer
     {
         public const int Port = 27301;
-        readonly OverlayForm _overlay;
-        readonly DataContractJsonSerializer _ser = new(typeof(WsMsg));
 
-        public WsServer(OverlayForm overlay) => _overlay = overlay;
+        readonly OverlayForm     _overlay;
+        readonly StockfishManager _sfManager;
+        readonly DataContractJsonSerializer _deser = new(typeof(WsMsg));
+
+        // Track all active connections for broadcasting eval results
+        readonly List<(WebSocket ws, SemaphoreSlim lk)> _clients = new();
+        readonly object _clientsLock = new();
+
+        public WsServer(OverlayForm overlay, StockfishManager sfManager)
+        {
+            _overlay   = overlay;
+            _sfManager = sfManager;
+            _sfManager.BroadcastAsync = BroadcastAsync;
+        }
 
         public async Task RunAsync(CancellationToken ct)
         {
@@ -697,9 +1043,14 @@ namespace ChessistOverlay
         {
             var wsCtx = await ctx.AcceptWebSocketAsync(null);
             var ws    = wsCtx.WebSocket;
+            var lk    = new SemaphoreSlim(1, 1);
             var buf   = new byte[65536];
 
+            lock (_clientsLock) _clients.Add((ws, lk));
             DebugLog.Connect();
+
+            // Send current engine status to newly connected client
+            _ = Task.Run(() => _sfManager.BroadcastAsync?.Invoke(null!)); // will be filtered below
 
             try
             {
@@ -710,22 +1061,81 @@ namespace ChessistOverlay
 
                     int len  = result.Count;
                     var json = Encoding.UTF8.GetString(buf, 0, len);
-                    using var ms = new System.IO.MemoryStream(Encoding.UTF8.GetBytes(json));
-                    var msg = (WsMsg)_ser.ReadObject(ms)!;
+
+                    WsMsg msg;
+                    try
+                    {
+                        using var ms = new MemoryStream(Encoding.UTF8.GetBytes(json));
+                        msg = (WsMsg)_deser.ReadObject(ms)!;
+                    }
+                    catch { continue; }
 
                     if (DebugLog.Enabled)
-                        DebugLog.Message(msg.PositionOnly ? "positionOnly" : "eval", len, msg.PositionOnly);
+                        DebugLog.Message(msg.Type ?? (msg.PositionOnly ? "positionOnly" : "overlay"), len);
 
-                    _overlay.Apply(msg);
+                    // Dispatch based on message type
+                    switch (msg.Type)
+                    {
+                        case "evaluate":
+                            _sfManager.Evaluate(
+                                msg.Fen ?? "",
+                                msg.Depth > 0 ? msg.Depth : 18,
+                                msg.MultiPv > 0 ? msg.MultiPv : 1);
+                            break;
+
+                        case "stop":
+                            _sfManager.Stop();
+                            break;
+
+                        case "set_option":
+                            if (msg.Name != null && msg.Value != null)
+                                _sfManager.SetOption(msg.Name, msg.Value);
+                            break;
+
+                        default:
+                            // Overlay position/visual update
+                            _overlay.Apply(msg);
+                            break;
+                    }
                 }
             }
             catch { }
             finally
             {
+                lock (_clientsLock) _clients.RemoveAll(c => c.ws == ws);
                 DebugLog.Disconnect();
                 _overlay.Apply(new WsMsg { Visible = false });
                 ws.Dispose();
+                lk.Dispose();
             }
+        }
+
+        public async Task BroadcastAsync(string json)
+        {
+            if (json == null) return;
+            var bytes = Encoding.UTF8.GetBytes(json);
+
+            List<(WebSocket ws, SemaphoreSlim lk)> snapshot;
+            lock (_clientsLock) snapshot = new List<(WebSocket, SemaphoreSlim)>(_clients);
+
+            var tasks = new List<Task>(snapshot.Count);
+            foreach (var (ws, lk) in snapshot)
+                tasks.Add(SendSafeAsync(ws, lk, bytes));
+
+            await Task.WhenAll(tasks);
+        }
+
+        static async Task SendSafeAsync(WebSocket ws, SemaphoreSlim lk, byte[] bytes)
+        {
+            if (ws.State != WebSocketState.Open) return;
+            await lk.WaitAsync();
+            try
+            {
+                if (ws.State == WebSocketState.Open)
+                    await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch { }
+            finally { lk.Release(); }
         }
     }
 
@@ -743,12 +1153,16 @@ namespace ChessistOverlay
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            using var cts     = new CancellationTokenSource();
-            using var overlay = new OverlayForm();
-            using var tray    = new TrayApp();
+            using var cts      = new CancellationTokenSource();
+            using var overlay  = new OverlayForm();
+            using var tray     = new TrayApp();
+            using var sfMgr    = new StockfishManager();
+            var wsServer       = new WsServer(overlay, sfMgr);
 
             Application.ApplicationExit += (_, _) => cts.Cancel();
-            Task.Run(() => new WsServer(overlay).RunAsync(cts.Token));
+
+            Task.Run(() => wsServer.RunAsync(cts.Token));
+            Task.Run(() => sfMgr.TryStart());
 
             overlay.Show();
             Application.Run();

@@ -125,9 +125,9 @@
           <span class="setting-label">Delay (sec)</span>
           <div class="delay-right">
             <div class="delay-control">
-              <input type="number" id="delayMin" min="0" max="10" step="0.1" value="0.5" title="Minimum delay">
+              <input type="number" id="delayMin" min="0" max="10" step="0.1" value="0.1" title="Minimum delay">
               <span class="delay-separator">-</span>
-              <input type="number" id="delayMax" min="0" max="10" step="0.1" value="2" title="Maximum delay">
+              <input type="number" id="delayMax" min="0" max="10" step="0.1" value="0.3" title="Maximum delay">
             </div>
             <label class="toggle instant-toggle">
               <input type="checkbox" id="instantMove">
@@ -218,48 +218,13 @@
     <div class="engine-section">
       <h2>Engine</h2>
 
-      <div class="engine-toggle">
-        <button id="wasmBtn" class="engine-btn active">
-          <span class="engine-icon">🌐</span>
-          <span class="engine-name">Built-in</span>
-          <span class="engine-desc">Browser engine (slower)</span>
-        </button>
-        <button id="nativeBtn" class="engine-btn">
-          <span class="engine-icon">💻</span>
-          <span class="engine-name">Native</span>
-          <span class="engine-desc">Local Stockfish</span>
-        </button>
+      <div id="engineStatus" class="overlay-status">
+        <span id="engineStatusIcon">●</span>
+        <span id="engineStatusText">Chessist Engine not running</span>
       </div>
+      <p class="engine-desc-hint">Run <strong>ChessistEngine.exe</strong> for native Stockfish. Falls back to built-in WASM engine when not running.</p>
 
-      <div id="nativeStatus" class="native-status hidden">
-        <span id="nativeStatusIcon">⏳</span>
-        <span id="nativeStatusText">Connecting...</span>
-      </div>
-
-      <div id="nativeHelp" class="native-help hidden">
-        <p class="setup-title">First-time setup</p>
-        <ol class="setup-steps">
-          <li>
-            <a href="https://github.com/lurimous/Chessist" target="_blank" rel="noopener">Download Chessist</a>
-            and extract it somewhere permanent
-          </li>
-          <li>
-            Install <a href="https://stockfishchess.org/download/" target="_blank" rel="noopener">Stockfish</a>
-            (add to PATH or note the .exe path)
-          </li>
-          <li>
-            Run <strong>setup.bat</strong> — it will ask for your extension ID:
-            <button type="button" id="copyIdBtn" class="copy-path-btn" title="Click to copy extension ID">
-              <span class="path-text" id="extensionId">Loading...</span>
-              <span class="copy-icon">📋</span>
-            </button>
-          </li>
-          <li>Restart your browser</li>
-        </ol>
-        <p class="help-hint">setup.bat installs dependencies, builds the overlay, and registers the native engine.</p>
-      </div>
-
-      <button type="button" id="forceRestartBtn" class="force-restart-btn" title="Force restart engine if stuck">
+      <button type="button" id="forceRestartBtn" class="force-restart-btn" title="Force restart WASM engine if stuck">
         Force Restart Engine
       </button>
     </div>

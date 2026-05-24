@@ -12,14 +12,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const depthValue = document.getElementById('depthValue');
   const currentEval = document.getElementById('currentEval');
   const currentDepth = document.getElementById('currentDepth');
-  const wasmBtn = document.getElementById('wasmBtn');
-  const nativeBtn = document.getElementById('nativeBtn');
-  const nativeStatus = document.getElementById('nativeStatus');
-  const nativeStatusIcon = document.getElementById('nativeStatusIcon');
-  const nativeStatusText = document.getElementById('nativeStatusText');
-  const nativeHelp = document.getElementById('nativeHelp');
-  const copyIdBtn = document.getElementById('copyIdBtn');
-  const extensionIdEl = document.getElementById('extensionId');
+  const engineStatus     = document.getElementById('engineStatus');
+  const engineStatusIcon = document.getElementById('engineStatusIcon');
+  const engineStatusText = document.getElementById('engineStatusText');
   const autoMoveToggle = document.getElementById('autoMove');
   const instantMoveToggle = document.getElementById('instantMove');
   const delayMinInput = document.getElementById('delayMin');
@@ -46,14 +41,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const offsetXInput           = document.getElementById('offsetXInput');
   const offsetYInput           = document.getElementById('offsetYInput');
 
-  let currentEngineSource = 'wasm';
   let currentPlayerColor = 'auto'; // 'auto', 'w', or 'b'
   let lastReceivedEvaluation = null; // Store last eval to refresh on color change
-
-  // Display the extension ID for native host setup
-  const extensionId = chrome.runtime.id;
-  extensionIdEl.textContent = extensionId;
-  extensionIdEl.title = 'Click to copy extension ID';
 
   const accToggle = document.getElementById('accToggle');
   const wlBalanceToggle = document.getElementById('wlBalance');
@@ -71,11 +60,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const manualEloInput = document.getElementById('manualElo');
 
   let currentTargetAccuracy = 100; // 100 = off
+  let _engineStatusInterval = null;
 
   // Load current settings
   const settings = await chrome.storage.sync.get([
     'enabled', 'showBestMove', 'showOpponentBestMove', 'showAltArrows', 'showMoveIcon', 'autoMove', 'instantMove', 'smartTiming', 'autoRematch', 'autoNewGame',
-    'stealthMode', 'engineDepth', 'engineSource', 'playerColor', 'autoMoveDelayMin', 'autoMoveDelayMax', 'skillLevel',
+    'stealthMode', 'engineDepth', 'playerColor', 'autoMoveDelayMin', 'autoMoveDelayMax', 'skillLevel',
     'targetAccuracy', 'wlBalance', 'maxConsecutiveWins', 'maxConsecutiveLosses',
     'throwRandom', 'lossRandom', 'matchElo', 'manualElo', 'overlayMode'
   ]);
@@ -99,14 +89,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   stealthModeToggle.checked = settings.stealthMode !== false;
   engineDepth.value = settings.engineDepth || 18;
   depthValue.textContent = engineDepth.value;
-  currentEngineSource = settings.engineSource || 'wasm';
   currentPlayerColor = settings.playerColor || 'auto';
 
   // Auto-move settings
   instantMoveToggle.checked = settings.instantMove === true;
   smartTimingToggle.checked = settings.smartTiming !== false; // Default true
-  delayMinInput.value = settings.autoMoveDelayMin ?? 0.5;
-  delayMaxInput.value = settings.autoMoveDelayMax ?? 2;
+  delayMinInput.value = settings.autoMoveDelayMin ?? 0.1;
+  delayMaxInput.value = settings.autoMoveDelayMax ?? 0.3;
   updateInstantModeUI();
   skillLevelInput.value = settings.skillLevel ?? 20;
   skillValueEl.textContent = skillLevelInput.value;
@@ -148,10 +137,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
 
-  // Update button states
-  updateEngineButtons();
-  updateNativeStatusVisibility();
   updateColorButtons();
+  _startEngineStatusPolling();
+
+  // Auto-launch engine if overlay mode is already on and engine not yet connected
+  if (settings.overlayMode) {
+    chrome.runtime.sendMessage({ type: 'LAUNCH_ENGINE' }).catch(() => {});
+  }
 
   // Request last evaluation to show current state
   try {
@@ -217,52 +209,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   offsetXInput.addEventListener('change', _saveAndSendOffsets);
   offsetYInput.addEventListener('change', _saveAndSendOffsets);
 
-  // Overlay status polling
-  let _overlayStatusInterval = null;
-
-  async function _pollOverlayStatus() {
+  // Engine + overlay status polling
+  async function _pollEngineStatus() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab) return;
       const res = await chrome.tabs.sendMessage(tab.id, { type: 'GET_OVERLAY_WS_STATUS' });
       if (res?.connected) {
+        engineStatus.classList.add('connected');
         overlayStatus.classList.add('connected');
+        engineStatusIcon.textContent = '✓';
+        engineStatusText.textContent = 'Chessist Engine connected';
         overlayStatusIcon.textContent = '✓';
         overlayStatusText.textContent = 'Overlay connected';
       } else {
+        engineStatus.classList.remove('connected');
         overlayStatus.classList.remove('connected');
+        engineStatusIcon.textContent = '●';
+        engineStatusText.textContent = 'Chessist Engine not running';
         overlayStatusIcon.textContent = '●';
         overlayStatusText.textContent = 'Connecting to overlay...';
       }
     } catch (e) {
+      engineStatus.classList.remove('connected');
       overlayStatus.classList.remove('connected');
-      overlayStatusIcon.textContent = '●';
-      overlayStatusText.textContent = 'Connecting to overlay...';
+      engineStatusIcon.textContent = '●';
+      engineStatusText.textContent = 'Chessist Engine not running';
     }
   }
 
-  function _startOverlayStatusPolling() {
-    overlayStatus.classList.remove('hidden');
-    _pollOverlayStatus();
-    _overlayStatusInterval = setInterval(_pollOverlayStatus, 1000);
+  function _startEngineStatusPolling() {
+    _pollEngineStatus();
+    _engineStatusInterval = setInterval(_pollEngineStatus, 1000);
   }
-
-  function _stopOverlayStatusPolling() {
-    clearInterval(_overlayStatusInterval);
-    _overlayStatusInterval = null;
-    overlayStatus.classList.add('hidden');
-  }
-
-  if (overlayModeToggle.checked) _startOverlayStatusPolling();
 
   // Toggle overlay mode
   overlayModeToggle.addEventListener('change', async () => {
     await chrome.storage.sync.set({ overlayMode: overlayModeToggle.checked });
     notifyContentScripts({ type: 'SETTINGS_UPDATED', overlayMode: overlayModeToggle.checked });
-    chrome.runtime.sendMessage({ type: 'SET_OVERLAY_MODE', enabled: overlayModeToggle.checked }).catch(() => {});
     _updateManualMapVisibility();
-    if (overlayModeToggle.checked) _startOverlayStatusPolling();
-    else _stopOverlayStatusPolling();
+    if (overlayModeToggle.checked) {
+      overlayStatus.classList.remove('hidden');
+      chrome.runtime.sendMessage({ type: 'LAUNCH_ENGINE' }).catch(() => {});
+    } else {
+      overlayStatus.classList.add('hidden');
+      chrome.runtime.sendMessage({ type: 'KILL_ENGINE' }).catch(() => {});
+    }
   });
 
   // Toggle move icon
@@ -498,10 +490,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     notifyContentScripts({ type: 'SETTINGS_UPDATED', engineDepth: newDepth });
   });
 
-  // Engine button clicks
-  wasmBtn.addEventListener('click', () => selectEngine('wasm'));
-  nativeBtn.addEventListener('click', () => selectEngine('native'));
-
   // Player color button clicks
   colorAutoBtn.addEventListener('click', () => selectPlayerColor('auto'));
   colorWhiteBtn.addEventListener('click', () => selectPlayerColor('w'));
@@ -524,43 +512,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     colorBlackBtn.classList.toggle('active', currentPlayerColor === 'b');
   }
 
-  // Copy extension ID button
-  copyIdBtn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(extensionId);
-      copyIdBtn.classList.add('copied');
-      const originalText = extensionIdEl.textContent;
-      extensionIdEl.textContent = 'Copied!';
-      setTimeout(() => {
-        copyIdBtn.classList.remove('copied');
-        extensionIdEl.textContent = originalText;
-      }, 1500);
-    } catch (e) {
-      // Fallback: select the text
-      extensionIdEl.select?.();
-    }
-  });
-
-  // Force restart engine button
+  // Force restart WASM engine button
   forceRestartBtn.addEventListener('click', async () => {
     forceRestartBtn.disabled = true;
     forceRestartBtn.textContent = 'Restarting...';
 
     try {
-      const response = await chrome.runtime.sendMessage({ type: 'FORCE_RESTART_ENGINE' });
-      console.log('Force restart response:', response);
-
-      // Wait a moment, then update status and trigger re-evaluation
+      await chrome.runtime.sendMessage({ type: 'FORCE_RESTART_ENGINE' });
       setTimeout(async () => {
         forceRestartBtn.textContent = 'Force Restart Engine';
         forceRestartBtn.disabled = false;
-
-        // Update native status if using native engine
-        if (currentEngineSource === 'native') {
-          await checkNativeStatus();
-        }
-
-        // Trigger re-evaluation on active Chess.com tabs
         notifyContentScripts({ type: 'RE_EVALUATE' });
       }, 1500);
     } catch (e) {
@@ -572,105 +533,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 2000);
     }
   });
-
-  async function selectEngine(source) {
-    currentEngineSource = source;
-    await chrome.storage.sync.set({ engineSource: source });
-    updateEngineButtons();
-
-    // Show native status panel immediately (but don't check status yet)
-    if (source === 'native') {
-      nativeStatus.classList.remove('hidden');
-      nativeHelp.classList.remove('hidden');
-      // Show "Connecting..." state
-      nativeStatusIcon.textContent = '⏳';
-      nativeStatusText.textContent = 'Connecting...';
-      nativeStatus.classList.remove('connected', 'error');
-    } else {
-      nativeStatus.classList.add('hidden');
-      nativeHelp.classList.add('hidden');
-    }
-
-    // Notify service worker to switch engine
-    try {
-      await chrome.runtime.sendMessage({
-        type: 'SET_ENGINE_SOURCE',
-        source: source
-      });
-
-      // Wait for engine to connect, then check status and trigger re-evaluation
-      if (source === 'native') {
-        // Wait for native connection before checking status
-        setTimeout(async () => {
-          await checkNativeStatus();
-          const status = await chrome.runtime.sendMessage({ type: 'CHECK_NATIVE_STATUS' });
-          if (status?.connected) {
-            notifyContentScripts({ type: 'RE_EVALUATE' });
-          }
-        }, 1000);
-      } else {
-        // WASM is always ready, trigger re-evaluation immediately
-        notifyContentScripts({ type: 'RE_EVALUATE' });
-      }
-    } catch (e) {
-      console.error('Failed to set engine source:', e);
-    }
-  }
-
-  // Update button active states
-  function updateEngineButtons() {
-    if (currentEngineSource === 'wasm') {
-      wasmBtn.classList.add('active');
-      nativeBtn.classList.remove('active');
-    } else {
-      wasmBtn.classList.remove('active');
-      nativeBtn.classList.add('active');
-    }
-  }
-
-  // Update native status visibility based on selected engine
-  // Called on initial load - selectEngine handles its own status checking
-  function updateNativeStatusVisibility() {
-    if (currentEngineSource === 'native') {
-      nativeStatus.classList.remove('hidden');
-      nativeHelp.classList.remove('hidden');
-      // Check status (for initial popup load, engine should already be connected)
-      checkNativeStatus();
-    } else {
-      nativeStatus.classList.add('hidden');
-      nativeHelp.classList.add('hidden');
-    }
-  }
-
-  // Check native Stockfish connection status
-  async function checkNativeStatus() {
-    nativeStatusIcon.textContent = '⏳';
-    nativeStatusText.textContent = 'Connecting...';
-    nativeStatus.classList.remove('connected', 'error');
-
-    try {
-      const response = await chrome.runtime.sendMessage({ type: 'CHECK_NATIVE_STATUS' });
-      if (response && response.connected) {
-        nativeStatus.classList.remove('error');
-        nativeStatus.classList.add('connected');
-        nativeStatusIcon.textContent = '✓';
-        nativeStatusText.textContent = `Connected: ${response.path || 'Stockfish'}`;
-        nativeHelp.classList.add('hidden');
-      } else {
-        nativeStatus.classList.remove('connected');
-        nativeStatus.classList.add('error');
-        nativeStatusIcon.textContent = '✗';
-        nativeStatusText.textContent = response?.error || 'Not connected';
-        nativeHelp.classList.remove('hidden');
-      }
-    } catch (e) {
-      nativeStatus.classList.remove('connected');
-      nativeStatus.classList.add('error');
-      nativeStatusIcon.textContent = '✗';
-      nativeStatusText.textContent = 'Not connected';
-      nativeHelp.classList.remove('hidden');
-    }
-  }
 
   // Notify content scripts helper
   async function notifyContentScripts(message) {
@@ -688,26 +550,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Listen for eval updates and engine source changes
+  // Listen for eval updates
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'EVAL_RESULT' && message.evaluation) {
       lastReceivedEvaluation = message.evaluation;
       updateEvalDisplay(message.evaluation);
     }
-    // Handle auto-fallback from native to WASM (e.g., Opera browser)
-    if (message.type === 'ENGINE_SOURCE_CHANGED') {
-      currentEngineSource = message.source;
-      updateEngineButtons();
-      updateNativeStatusVisibility();
-      if (message.source === 'wasm') {
-        // Show brief notification that we fell back
-        nativeStatus.classList.remove('hidden', 'connected');
-        nativeStatus.classList.add('error');
-        nativeStatusIcon.textContent = '⚠';
-        nativeStatusText.textContent = 'Native not supported, using built-in engine';
-        setTimeout(() => {
-          nativeStatus.classList.add('hidden');
-        }, 3000);
+    if (message.type === 'ENGINE_STATUS') {
+      if (message.status === 'ready') {
+        engineStatus.classList.add('connected');
+        engineStatusIcon.textContent = '✓';
+        engineStatusText.textContent = 'Chessist Engine connected';
+      } else if (message.status === 'error') {
+        engineStatus.classList.remove('connected');
+        engineStatusIcon.textContent = '✗';
+        engineStatusText.textContent = message.message || 'Chessist Engine error';
       }
     }
   });

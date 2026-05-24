@@ -61,8 +61,8 @@
   let smartTiming = true;
   let autoRematch = false;
   let autoNewGame = false;
-  let autoMoveDelayMin = 0.5;
-  let autoMoveDelayMax = 2;
+  let autoMoveDelayMin = 0.1;
+  let autoMoveDelayMax = 0.3;
   let skillLevel = 20;
   let lastGameUrl = null;
 
@@ -96,8 +96,8 @@
       stealthMode = result.stealthMode !== false;
       targetDepth = result.engineDepth || 18;
       manualPlayerColor = result.playerColor || 'auto';
-      autoMoveDelayMin = result.autoMoveDelayMin ?? 0.5;
-      autoMoveDelayMax = result.autoMoveDelayMax ?? 2;
+      autoMoveDelayMin = result.autoMoveDelayMin ?? 0.1;
+      autoMoveDelayMax = result.autoMoveDelayMax ?? 0.3;
       skillLevel = result.skillLevel ?? 20;
       targetAccuracy = result.targetAccuracy ?? 100;
       wlBalance = result.wlBalance === true;
@@ -112,8 +112,8 @@
       manualMap     = localData.manualMap     === true;
       manualOffsetX = localData.manualOffsetX ?? 0;
       manualOffsetY = localData.manualOffsetY ?? 0;
+      _connectEngineWs(); // always connect for engine eval
       if (overlayMode) {
-        _connectOverlayWs();
         if (evalBar) evalBar.style.display = 'none';
         clearArrow();
         clearMoveIcon();
@@ -880,32 +880,124 @@
   // ── Overlay WebSocket (direct, low-latency) ─────────────────────────────────
   let _overlayWs = null;
   let _overlayReconnectTimer = null;
+
+  // ── Move prediction cache ─────────────────────────────────────────────────
+  let _pvQuickCache = null; // instant pv-derived prediction: { fenKey, bestMove, cp, mate, pv, depth, turn }
+  let _preWarmCache = null; // exact engine result for predicted position: { fenKey, eval }
+
+  function _fenKey(fen) { return fen ? fen.split(' ').slice(0, 2).join(' ') : null; }
+
+  function _applyMove(fen, move) {
+    if (!fen || !move || move.length < 4) return null;
+    try {
+      const sp = fen.split(' ');
+      const turn = sp[1] || 'w';
+      const b = sp[0].split('/').map(r => {
+        const row = [];
+        for (const c of r) /\d/.test(c) ? row.push(...Array(+c).fill(null)) : row.push(c);
+        return row;
+      });
+      const ff = move.charCodeAt(0)-97, fr = +move[1]-1;
+      const tf = move.charCodeAt(2)-97, tr = +move[3]-1;
+      const piece = b[7-fr][ff];
+      if (!piece) return null;
+      b[7-fr][ff] = null;
+      b[7-tr][tf] = move[4] ? (turn==='w' ? move[4].toUpperCase() : move[4]) : piece;
+      if (piece.toLowerCase()==='k' && Math.abs(tf-ff)===2) {
+        const rf=tf>ff?7:0, rt=tf>ff?5:3;
+        b[7-fr][rt]=b[7-fr][rf]; b[7-fr][rf]=null;
+      }
+      const board = b.map(row => {
+        let s='',e=0;
+        for (const c of row) c?(e&&(s+=e,e=0),s+=c):e++;
+        return s+(e||'');
+      }).join('/');
+      return `${board} ${turn==='w'?'b':'w'} - - 0 1`;
+    } catch (_) { return null; }
+  }
+
+  function _updatePVPrediction(evaluation) {
+    if (!evaluation.pv || evaluation.pv.length < 2 || !currentFen) return;
+    const after1 = _applyMove(currentFen, evaluation.pv[0]);
+    if (!after1) return;
+    const after2 = _applyMove(after1, evaluation.pv[1]);
+    if (!after2) return;
+    const key = _fenKey(after2);
+    _pvQuickCache = {
+      fenKey: key,
+      bestMove: evaluation.pv[2] || null,
+      cp: evaluation.cp,
+      mate: evaluation.mate,
+      pv: evaluation.pv.slice(2),
+      depth: evaluation.depth,
+      turn: after2.split(' ')[1] || 'w',
+    };
+    _preWarmCache = null;
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try {
+        _overlayWs.send(JSON.stringify({
+          type: 'evaluate', fen: after2, depth: targetDepth, multiPv: showAltArrows ? 3 : 1,
+        }));
+      } catch (_) {}
+    }
+  }
   let _boardObserver = null;
   let _observedBoard = null;
   let _lastEvaluation = null;
 
-  function _connectOverlayWs() {
+  function _connectEngineWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
     try {
       _overlayWs = new WebSocket('ws://127.0.0.1:27301');
       _overlayWs.onopen  = () => {
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
+        // Board may not be in DOM yet on page load — poll until ready
+        if (!findBoard()) {
+          const _initPoll = setInterval(() => {
+            if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
+            if (findBoard()) { sendPositionUpdate(); clearInterval(_initPoll); }
+          }, 200);
+        }
         if (_lastEvaluation) updateEval(_lastEvaluation);
-        else if (currentFen) requestEval(currentFen);
+        if (currentFen) requestEval(currentFen); // always request fresh after (re)connect
+      };
+      _overlayWs.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'eval' && msg.data) {
+            const d = msg.data;
+            const key = _fenKey(d.fen);
+            const curKey = _fenKey(currentFen);
+            if (key && key !== curKey) {
+              // Only store complete (target-depth) pre-warm results — intermediate depths would
+              // be served as the final answer and block the fresh eval request.
+              if (_pvQuickCache && key === _pvQuickCache.fenKey && d.depth >= targetDepth)
+                _preWarmCache = { fenKey: key, eval: d };
+              return;
+            }
+            handleEvaluationResult(d);
+          } else if (msg.type === 'engine_status') {
+            chrome.runtime.sendMessage({ type: 'ENGINE_STATUS', status: msg.status, message: msg.message }).catch(() => {});
+          }
+        } catch (ignore) {}
       };
       _overlayWs.onclose = () => {
         _overlayWs = null;
-        if (overlayMode) _overlayReconnectTimer = setTimeout(_connectOverlayWs, 3000);
+        _overlayReconnectTimer = setTimeout(_connectEngineWs, 3000);
       };
       _overlayWs.onerror = () => {};
     } catch (e) {}
   }
 
+  function _connectOverlayWs() { _connectEngineWs(); }
+
   function _disconnectOverlayWs() {
     clearTimeout(_overlayReconnectTimer);
     _overlayReconnectTimer = null;
-    if (_overlayWs) { try { _overlayWs.close(); } catch (e) {} _overlayWs = null; }
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
+    }
   }
 
   function sendPositionUpdate() {
@@ -948,10 +1040,10 @@
     }
   }, 250);
 
-  // Fallback: re-show overlay every 1s when focused, in case the focus event was missed
+  // Fallback: re-show overlay every 1s — catches focus-restore, post-refresh board-ready, etc.
   setInterval(() => {
     if (!overlayMode || !isEnabled || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-    if (document.hasFocus()) sendPositionUpdate();
+    sendPositionUpdate();
   }, 1000);
   window.addEventListener('resize', sendPositionUpdate);
   window.addEventListener('scroll', sendPositionUpdate, { passive: true });
@@ -963,18 +1055,16 @@
   _watchZoom();
 
   document.addEventListener('visibilitychange', () => {
-    if (!overlayMode) return;
     if (document.hidden) {
-      if (_overlayWs?.readyState === WebSocket.OPEN)
+      if (overlayMode && _overlayWs?.readyState === WebSocket.OPEN)
         try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
     } else {
       if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN) sendPositionUpdate();
-      else _connectOverlayWs();
+      else _connectEngineWs();
     }
   });
   window.addEventListener('focus', () => {
-    if (!overlayMode) return;
-    if (!(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectOverlayWs();
+    if (!(_overlayWs && _overlayWs.readyState <= WebSocket.OPEN)) _connectEngineWs();
   });
 
   function sendOverlayUpdate(fillPercent, displayScore, isFlipped, evaluation) {
@@ -992,29 +1082,32 @@
     const atDepth  = evaluation.depth >= targetDepth;
     const arrows   = [];
     if (showBest && atDepth) {
-      const alts = (evaluation.multiPvMoves || []).filter(m => m && m.length >= 4);
-      if (alts.length > 0)
-        arrows.push({ from: alts[0].substring(0, 2), to: alts[0].substring(2, 4) });
+      const best = evaluation.bestMove;
+      if (best && best.length >= 4)
+        arrows.push({ from: best.substring(0, 2), to: best.substring(2, 4) });
       if (showAltArrows) {
-        for (let i = 1; i < Math.min(3, alts.length); i++)
+        const alts = (evaluation.multiPvMoves || []).filter(m => m && m.length >= 4);
+        for (let i = 0; i < Math.min(2, alts.length); i++)
           arrows.push({ from: alts[i].substring(0, 2), to: alts[i].substring(2, 4) });
       }
     }
 
     const dpr = window.devicePixelRatio || 1;
     try {
-      _overlayWs.send(JSON.stringify({
+      const msg = {
         visible: true,
         flipped: isFlipped,
         viewX: rect.left, viewY: rect.top,
         width: rect.width, height: rect.height,
         dpr,
         evalBar: { fillPercent, isFlipped, score: displayScore },
-        arrows,
         manualMap,
         offsetX: manualOffsetX,
         offsetY: manualOffsetY,
-      }));
+      };
+      // Only update arrows at target depth — avoids blanking them during analysis
+      if (atDepth) msg.arrows = arrows;
+      _overlayWs.send(JSON.stringify(msg));
     } catch (e) {}
   }
 
@@ -1134,7 +1227,8 @@
 
       const positionKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
 
-      if (isPlayerTurn && evalMatchesCurrent && positionKey && positionKey !== lastAutoMovePosition) {
+      // fromCache=true means PV-derived prediction (display only) — wait for real engine result
+      if (isPlayerTurn && evalMatchesCurrent && positionKey && positionKey !== lastAutoMovePosition && !evaluation.fromCache) {
         lastAutoMovePosition = positionKey;
 
         let moveToPlay = evaluation.bestMove;
@@ -1191,7 +1285,7 @@
         if (instantMove) {
           log('Chessist: Instant auto-move for', moveToPlay);
           hideCountdown();
-          executeMove(moveToPlay);
+          _executeMoveVerified(moveToPlay, positionKey);
         } else {
           log('Chessist: Auto-move triggered for', moveToPlay, 'with delay', finalDelay, 'ms');
           startCountdown(finalDelay, positionKey, moveToPlay);
@@ -1249,7 +1343,7 @@
         if (nowPosition !== expectedPosition) { log('Chessist: Position changed, cancelling countdown'); hideCountdown(); return; }
       }
 
-      if (remaining <= 0) { hideCountdown(); log('Chessist: Countdown complete, executing move:', moveToPlay); executeMove(moveToPlay); }
+      if (remaining <= 0) { hideCountdown(); log('Chessist: Countdown complete, executing move:', moveToPlay); _executeMoveVerified(moveToPlay, expectedPosition); }
     }, 100);
   }
 
@@ -1272,8 +1366,35 @@
 
     log('Chessist: Requesting eval for FEN:', fen, isMouseRelease ? '(mouse release)' : '');
 
+    // Use Chessist Engine via WebSocket when connected
+    if (_overlayWs?.readyState === WebSocket.OPEN) {
+      try {
+        const key = _fenKey(fen);
+        // Serve pre-warmed exact engine result instantly
+        if (_preWarmCache?.fenKey === key) {
+          const cached = _preWarmCache.eval;
+          _preWarmCache = null;
+          handleEvaluationResult(cached);
+          return;
+        }
+        // Serve instant PV-derived prediction while engine computes fresh
+        if (_pvQuickCache?.fenKey === key && _pvQuickCache.bestMove) {
+          handleEvaluationResult({
+            bestMove: _pvQuickCache.bestMove, cp: _pvQuickCache.cp, mate: _pvQuickCache.mate,
+            pv: _pvQuickCache.pv, depth: _pvQuickCache.depth, turn: _pvQuickCache.turn,
+            fen, fromCache: true,
+          });
+        }
+        _overlayWs.send(JSON.stringify({
+          type: 'evaluate', fen, depth: targetDepth, multiPv: showAltArrows ? 3 : 1,
+        }));
+        return;
+      } catch (e) {}
+    }
+
+    // Fallback: WASM via service worker
     try {
-      const response = await chrome.runtime.sendMessage({ type: 'EVALUATE', fen, isMouseRelease });
+      const response = await chrome.runtime.sendMessage({ type: 'EVALUATE', fen, isMouseRelease, t: Date.now() });
       if (response && response.evaluation) updateEval(response.evaluation);
     } catch (e) {
       const errorMsg = e.message || e.toString();
@@ -1285,47 +1406,54 @@
     }
   }
 
-  // Listen for eval updates from background
+  // Shared handler for eval results from either WS engine or WASM service worker
+  function handleEvaluationResult(evaluation) {
+    if (!evaluation) return;
+    if (evaluation.fen && currentFen) {
+      const evalPosition = evaluation.fen.split(' ').slice(0, 2).join(' ');
+      const currentPosition = currentFen.split(' ').slice(0, 2).join(' ');
+      if (evalPosition !== currentPosition) return;
+    }
+    if (accuracyEvalPending) {
+      const ev = evaluation;
+      if (ev.depth >= ACCURACY_EVAL_DEPTH) {
+        const et = ev.turn || 'w';
+        let newCpWhite;
+        if (ev.mate !== undefined) {
+          const mateSigned = et === 'b' ? -ev.mate : ev.mate;
+          newCpWhite = mateSigned > 0 ? 10000 : -10000;
+        } else {
+          newCpWhite = et === 'b' ? -(ev.cp || 0) : (ev.cp || 0);
+        }
+        if (prevCpWhite !== null) {
+          const playerBefore = playerColor === 'b' ? -prevCpWhite : prevCpWhite;
+          const playerAfter  = playerColor === 'b' ? -newCpWhite  : newCpWhite;
+          const accuracy = calculateMoveAccuracy(playerBefore, playerAfter);
+          moveAccuracies.push(accuracy);
+          updateAccuracyDisplay(accuracy, accuracy >= 99);
+          saveAccuracyState();
+          if (lastMoveToSquare) {
+            const cls = classifyMove(accuracy, accuracy >= 99);
+            drawMoveIconOnBoard(lastMoveToSquare, cls);
+          }
+          log(`Chessist: Move accuracy ${accuracy.toFixed(1)}%`);
+        }
+        accuracyEvalPending = false;
+      }
+    }
+    updateEval(evaluation);
+    chrome.runtime.sendMessage({ type: 'WS_EVAL_UPDATE', evaluation }).catch(() => {});
+    if (!evaluation.fromCache && evaluation.pv?.length >= 2 && evaluation.depth >= targetDepth)
+      _updatePVPrediction(evaluation);
+  }
+
+  // Listen for eval updates from background (WASM fallback path)
   try {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!extensionContextValid) return;
       try {
         if (message.type === 'EVAL_RESULT' && message.evaluation) {
-          if (message.evaluation.fen && currentFen) {
-            const evalPosition = message.evaluation.fen.split(' ').slice(0, 2).join(' ');
-            const currentPosition = currentFen.split(' ').slice(0, 2).join(' ');
-            if (evalPosition !== currentPosition) return;
-          }
-
-          if (accuracyEvalPending) {
-            const ev = message.evaluation;
-            if (ev.depth >= ACCURACY_EVAL_DEPTH) {
-              const et = ev.turn || 'w';
-              let newCpWhite;
-              if (ev.mate !== undefined) {
-                const mateSigned = et === 'b' ? -ev.mate : ev.mate;
-                newCpWhite = mateSigned > 0 ? 10000 : -10000;
-              } else {
-                newCpWhite = et === 'b' ? -(ev.cp || 0) : (ev.cp || 0);
-              }
-
-              if (prevCpWhite !== null) {
-                const playerBefore = playerColor === 'b' ? -prevCpWhite : prevCpWhite;
-                const playerAfter  = playerColor === 'b' ? -newCpWhite  : newCpWhite;
-                const accuracy = calculateMoveAccuracy(playerBefore, playerAfter);
-                moveAccuracies.push(accuracy);
-                updateAccuracyDisplay(accuracy, accuracy >= 99);
-                saveAccuracyState();
-                if (lastMoveToSquare) {
-                  const cls = classifyMove(accuracy, accuracy >= 99);
-                  drawMoveIconOnBoard(lastMoveToSquare, cls);
-                }
-                log(`Chessist: Move accuracy ${accuracy.toFixed(1)}%`);
-              }
-              accuracyEvalPending = false;
-            }
-          }
-          updateEval(message.evaluation);
+          handleEvaluationResult(message.evaluation);
         }
       } catch (e) {
         if (e.message?.includes('Extension context invalidated')) { extensionContextValid = false; showRefreshMessage(); }
@@ -1364,6 +1492,25 @@
       y = rect.top + (7 - rank + 0.5) * squareSize;
     }
     return { x, y };
+  }
+
+  function _executeMoveVerified(move, positionKeyBefore) {
+    executeMove(move);
+    setTimeout(() => {
+      const currentKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
+      if (currentKey !== positionKeyBefore) return;
+      log('Chessist: Move not registered, retrying:', move);
+      lastAutoMovePosition = null;
+      executeMove(move);
+      setTimeout(() => {
+        const stillKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
+        if (stillKey === positionKeyBefore) {
+          log('Chessist: Retry also failed, forcing re-eval');
+          lastAutoMovePosition = null;
+          if (currentFen) requestEval(currentFen);
+        }
+      }, 500);
+    }, 400);
   }
 
   function executeMove(move) {
@@ -1486,7 +1633,7 @@
     const moveList = document.querySelector('.tview2, .moves');
     if (moveList) {
       const moveObserver = new MutationObserver(() => {
-        setTimeout(() => checkForPositionChange(false), 100);
+        setTimeout(() => checkForPositionChange(false), (instantMove && autoMove) ? 0 : 100);
       });
       moveObserver.observe(moveList, { childList: true, subtree: true });
     }
@@ -1494,6 +1641,7 @@
 
   function checkForPositionChange(isMouseRelease = false) {
     clearTimeout(window.evalDebounce);
+    const _debounceMs = (instantMove && autoMove) ? 0 : (isMouseRelease ? 50 : 200);
     window.evalDebounce = setTimeout(() => {
       const board = findBoard();
       if (!board) { log('Chessist: No board found'); return; }
@@ -1642,7 +1790,7 @@
           requestEval(fenForEval, isMouseRelease);
         }
       }
-    }, isMouseRelease ? 50 : 200);
+    }, _debounceMs);
   }
 
   // ============================================================
