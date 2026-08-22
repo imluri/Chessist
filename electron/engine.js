@@ -30,6 +30,10 @@ class Engine {
     this.multipv = 1
     this.curFen = null
     this.pvSlots = {}
+    this.searching = false
+    this.pendingEval = null
+    this._stoppingForPending = false
+    this._discardBestMove = false
     this._path = null         // stockfish path (for auto-restart)
     this._intentional = false // suppress restart on deliberate kill
     this._restarts = 0        // bounded auto-restart counter
@@ -70,13 +74,15 @@ class Engine {
     proc.stdout.on('error', () => {})
     proc.on('exit', () => {
       this.ready = false
+      this.searching = false
+      this._stoppingForPending = false
       if (this.proc === proc) this.proc = null
       if (this._intentional) return
       this.onStatus?.({ status: 'error', message: 'Stockfish exited' })
       // Bounded auto-restart so a one-off crash recovers without looping forever.
       if (this._path && this._restarts < 3) {
         this._restarts++
-        setTimeout(() => { if (!this.proc) this.start() }, 1200)
+        setTimeout(() => { if (!this.proc) this.start() }, 400)
       }
     })
     this._send('uci')
@@ -99,6 +105,11 @@ class Engine {
       this.ready = true
       this._restarts = 0
       this.onStatus?.({ status: 'ready', message: 'Engine ready' })
+      if (this.pendingEval && !this.searching) {
+        const next = this.pendingEval
+        this.pendingEval = null
+        this._startEvaluation(next)
+      }
       return
     }
     if (line.startsWith('info depth')) {
@@ -118,6 +129,18 @@ class Engine {
     // (side to move is in check) → checkmate; otherwise → stalemate/draw.
     if (line.startsWith('bestmove')) {
       const move = line.split(/\s+/)[1]
+      this.searching = false
+      this._stoppingForPending = false
+      if (this._discardBestMove) {
+        this._discardBestMove = false
+        return
+      }
+      if (this.pendingEval) {
+        const next = this.pendingEval
+        this.pendingEval = null
+        this._startEvaluation(next)
+        return
+      }
       if (move === '(none)' || move === '0000') {
         const turn = this.curFen ? (this.curFen.split(' ')[1] || 'w') : 'w'
         const mated = this._lastInfo && this._lastInfo.mate === 0
@@ -132,21 +155,54 @@ class Engine {
     }
   }
 
-  evaluate(fen, depth, multipv) {
-    if (!this.ready) return
-    if (depth) this.depth = depth
-    if (multipv && multipv !== this.multipv) { this.multipv = multipv; this._send(`setoption name MultiPV value ${multipv}`) }
+  evaluate(fen, depth, multipv, force = false) {
+    if (!fen) return
+    const request = {
+      fen,
+      depth: depth || this.depth,
+      multipv: multipv || this.multipv,
+    }
+    if (!this.ready) {
+      this.pendingEval = request
+      return
+    }
+    if (this.searching) {
+      const duplicate = fen === this.curFen && request.depth === this.depth && request.multipv === this.multipv
+      if (duplicate && !force) return
+      this.pendingEval = request
+      if (!this._stoppingForPending) {
+        this._stoppingForPending = true
+        this._send('stop')
+      }
+      return
+    }
+    this._startEvaluation(request)
+  }
+
+  _startEvaluation({ fen, depth, multipv }) {
+    this.depth = depth || this.depth
+    if (multipv && multipv !== this.multipv) {
+      this.multipv = multipv
+      this._send(`setoption name MultiPV value ${multipv}`)
+    }
     this.curFen = fen
     this.pvSlots = {}
     this._lastInfo = null
-    this._send('stop')
+    this.searching = true
+    this._stoppingForPending = false
     this._send('position fen ' + fen)
     this._send('go depth ' + this.depth)
   }
 
   newGame() {
-    if (!this.ready) return
-    this._send('stop')
+    this.pendingEval = null
+    if (this.searching) {
+      this._discardBestMove = true
+      this._send('stop')
+    }
+    this.searching = false
+    this._stoppingForPending = false
+    this.ready = false
     this._send('ucinewgame')
     this._send('isready')
     this.curFen = null
@@ -183,7 +239,7 @@ class Engine {
     }
   }
 
-  stop() { this._send('stop') }
+  stop() { this.pendingEval = null; this._send('stop') }
   kill() { this._intentional = true; try { this.proc?.kill() } catch {} }
 }
 

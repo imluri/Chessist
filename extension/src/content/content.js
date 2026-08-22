@@ -87,6 +87,14 @@
     }
   }
 
+  // The desktop UI stores colors as "white" / "black", while the content
+  // scripts use FEN-compatible "w" / "b" values internally.
+  function normalizePlayerColor(value) {
+    if (value === 'white' || value === 'w') return 'w';
+    if (value === 'black' || value === 'b') return 'b';
+    return 'auto';
+  }
+
   // Initialize settings from storage
   async function loadSettings() {
     try {
@@ -108,7 +116,7 @@
       autoNewGame = result.autoNewGame === true; // Default false
       stealthMode = result.stealthMode !== false; // Default true
       targetDepth = result.engineDepth || 18;
-      manualPlayerColor = result.playerColor || 'auto';
+      manualPlayerColor = normalizePlayerColor(result.playerColor);
       autoMoveDelayMin = result.autoMoveDelayMin ?? 0.1;
       autoMoveDelayMax = result.autoMoveDelayMax ?? 0.3;
       skillLevel = result.skillLevel ?? 20;
@@ -3047,7 +3055,7 @@
       autoMoveDelayMax = data.autoMoveDelayMax;
     }
     if (data.playerColor !== undefined) {
-      manualPlayerColor = data.playerColor;
+      manualPlayerColor = normalizePlayerColor(data.playerColor);
       playerColor = detectPlayerColor();
       if (turnIndicatorEl) {
         const isMyTurn = playerColor && currentTurn === playerColor;
@@ -3149,7 +3157,7 @@
           }
           // Update playerColor if provided
           if (message.playerColor !== undefined) {
-            manualPlayerColor = message.playerColor;
+            manualPlayerColor = normalizePlayerColor(message.playerColor);
             playerColor = detectPlayerColor();  // Re-detect with new manual setting
             log('Chessist: Player color set to', manualPlayerColor, '-> detected as', playerColor);
             // Update turn indicator
