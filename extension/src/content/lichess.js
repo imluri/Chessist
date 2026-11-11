@@ -25,12 +25,15 @@
   let showAltArrows = true;
   let showMoveIcon = false;
   let autoMove = false;
+  let pendingAutoMove = null;
   let lastAutoMovePosition = null;
   let autoMoveExecuting = false;
   let evalWatchdogTimer = null;
   let evalWatchdogKey = null;
   let manualPlayerColor = 'auto';
   let boardObserver = null;
+  let observedRoundBoard = null;
+  let boardPollInterval = null;
   let arrowOverlay = null;
   let currentBestMove = null;
 
@@ -339,6 +342,11 @@
     return board.querySelector('cg-board') || board;
   }
 
+  function hasActivePremove(surface) {
+    // Chessground keeps unused square markers in the DOM for reuse.
+    return [...surface.querySelectorAll(PREMOVE_SELECTOR)].some(marker => marker.style.display !== 'none');
+  }
+
   // True when board is displayed from Black's perspective
   function isFlippedBoard(board) {
     if (!board) board = findBoard();
@@ -390,8 +398,8 @@
   // Parse chessground pieces: <piece class="white knight" style="transform: translate(Xpx, Ypx)">
   function parsePiecesFromDOM(board) {
     const cgBoard = getBoardSurface(board);
-    // Piece is mid-drag: its transform tracks the cursor, not a square
-    if (cgBoard.querySelector('piece.dragging')) return null;
+    // Transforms can describe an in-between position during drag or animation.
+    if (cgBoard.querySelector('piece.dragging, piece.anim, piece.fading')) return null;
     const pieces = cgBoard.querySelectorAll('piece');
     if (!pieces.length) return null;
 
@@ -596,7 +604,7 @@
     // A timed round may leave both clocks stopped until both players have moved.
     const moveCount = liveMoveCount();
     if (placement === STARTING_PLACEMENT) {
-      return playerColor === 'w' && moveCount === 0 && !getBoardSurface(board).querySelector('square.last-move');
+      return playerColor === 'w' && moveCount === 0 && !visibleLastMoveSquares(board).length;
     }
     return playerColor === 'b' && moveCount === 1 && turnFromLastMove(board) === 'b';
   }
@@ -644,6 +652,10 @@
     return turnFromLastMove(board) || 'w';
   }
 
+  function visibleLastMoveSquares(board) {
+    return [...getBoardSurface(board).querySelectorAll('square.last-move')].filter(square => square.style.display !== 'none');
+  }
+
   // The piece on the highlighted destination belongs to the previous mover.
   function turnFromLastMove(board) {
     if (!board) return null;
@@ -651,7 +663,7 @@
     const squareSize = board.getBoundingClientRect().width / 8;
     if (squareSize <= 0) return null;
 
-    for (const sqEl of cgBoard.querySelectorAll('square.last-move')) {
+    for (const sqEl of visibleLastMoveSquares(board)) {
       const m = sqEl.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
       if (!m) continue;
       const xPx = parseFloat(m[1]), yPx = parseFloat(m[2]);
@@ -1073,7 +1085,7 @@
       _overlayWs = _engineSocket();
       _overlayWs.onopen  = () => {
         try { _overlayWs.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Lichess' })); } catch (e) {}
-        reportAutoMove('connected', { ownGame: isInOwnGame(), position: livePositionKey() });
+        reportAutoMove('connected', { ownGame: isInOwnGame(), position: _fenKey(currentFen) });
         _launchTriggered = false;
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
@@ -1380,100 +1392,103 @@
       if (depthEl && evaluation.depth) depthEl.textContent = `D${evaluation.depth}`;
     }
 
-    // Auto-move (only when playing an own game, not spectating home/TV)
-    if (isEnabled && autoMove && !document.hidden && evaluation.bestMove && evaluation.depth >= moveReadyDepth()) {
-      const board = findBoard();
-      const gameId = getGameId();
-      const ownGame = isInOwnGame(board);
-      const isPlayerTurn = playerColor && currentTurn === playerColor;
-      const domTurnConfirmed = ownGame && domConfirmsPlayerTurn(board, currentFen?.split(' ')[0]);
-      const moveIsPlayers = !!(playerColor && moveBelongsToColor(evaluation.bestMove, currentFen, playerColor));
-      const positionKey = _fenKey(currentFen);
-      const evalMatchesCurrent = !!positionKey && _fenKey(evaluation.fen) === positionKey;
+    queueAutoMove(evaluation);
+  }
 
-      reportAutoMove('evaluation', {
-        move: evaluation.bestMove,
-        depth: evaluation.depth,
-        ownGame,
-        isPlayerTurn: !!isPlayerTurn,
-        domTurnConfirmed,
-        moveIsPlayers,
-        evalMatchesCurrent,
-        fromCache: !!evaluation.fromCache,
-        position: positionKey
-      });
+  function queueAutoMove(evaluation) {
+    if (!isEnabled || !autoMove || evaluation.fromCache || !evaluation.bestMove ||
+        !(evaluation.depth >= moveReadyDepth())) return;
 
-      // fromCache=true means PV-derived prediction (display only) — wait for real engine result
-      if (ownGame && isPlayerTurn && domTurnConfirmed && moveIsPlayers && !autoMoveExecuting && !countdownInterval &&
-          evalMatchesCurrent && positionKey && `${gameId} ${positionKey}` !== lastAutoMovePosition && !evaluation.fromCache) {
-        let moveToPlay = evaluation.bestMove;
-        const pv = evaluation.pv || [];
+    const gameId = getGameId();
+    const positionKey = _fenKey(currentFen);
+    if (!gameId || !positionKey || _fenKey(evaluation.fen) !== positionKey ||
+        `${gameId} ${positionKey}` === lastAutoMovePosition) return;
 
-        if (shouldWinThisGame) {
-          log('Chessist: Win mode - playing best move');
-        } else if (shouldThrowThisGame && pv.length >= 3) {
-          const ourPvMoves = pv.filter((_, i) => i % 2 === 0);
-          if (ourPvMoves.length >= 2) {
-            const throwIdx = Math.min(ourPvMoves.length - 1, 1 + Math.floor(Math.random() * Math.max(1, ourPvMoves.length - 1)));
-            moveToPlay = ourPvMoves[throwIdx];
-            log('Chessist: Throw mode - playing PV even-index', throwIdx * 2, ':', moveToPlay);
-          }
-        } else if (targetAccuracy < 100 && pv.length > 1) {
-          const deviationChance = (100 - targetAccuracy) / 100;
-          if (Math.random() < deviationChance) {
-            const maxIdx = Math.min(pv.length - 1, Math.ceil((100 - targetAccuracy) / 15));
-            const ourMoves = pv.filter((_, i) => i % 2 === 0);
-            const pick = Math.min(ourMoves.length - 1, 1 + Math.floor(Math.random() * maxIdx));
-            if (pick > 0 && ourMoves[pick]) {
-              moveToPlay = ourMoves[pick];
-              log('Chessist: Target accuracy', targetAccuracy, '% - deviating to PV move', pick);
-            }
-          }
-        } else if (skillLevel < 20 && pv.length > 1) {
-          const blunderChance = (20 - skillLevel) / 25;
-          if (Math.random() < blunderChance) {
-            const maxIndex = Math.min(pv.length - 1, Math.ceil((20 - skillLevel) / 4));
-            const pickIndex = Math.floor(Math.random() * (maxIndex + 1));
-            if (pickIndex > 0 && pv[pickIndex]) {
-              moveToPlay = pv[pickIndex];
-              log('Chessist: Skill level', skillLevel, '- picking move', pickIndex + 1, 'from PV:', moveToPlay);
-            }
-          }
-        }
+    pendingAutoMove = { gameId, positionKey, evaluation };
+    reportAutoMove('evaluation-queued', { move: evaluation.bestMove, depth: evaluation.depth, position: positionKey });
+    tryPendingAutoMove();
+  }
 
-        if (!moveBelongsToColor(moveToPlay, currentFen, playerColor)) {
-          moveToPlay = evaluation.bestMove;
-        }
+  function tryPendingAutoMove() {
+    if (!pendingAutoMove) return;
 
-        const minDelayMs = autoMoveDelayMin * 1000;
-        const maxDelayMs = autoMoveDelayMax * 1000;
-        const delayRange = maxDelayMs - minDelayMs;
-        let finalDelay;
+    const { gameId, positionKey, evaluation } = pendingAutoMove;
+    if (getGameId() !== gameId || _fenKey(currentFen) !== positionKey) {
+      pendingAutoMove = null;
+      return;
+    }
 
-        if (smartTiming) {
-          const complexity = calculateMoveComplexity(moveToPlay, evaluation, currentFen);
-          const baseDelay = minDelayMs + (delayRange * complexity);
-          const randomFactor = 0.8 + (Math.random() * 0.4);
-          finalDelay = Math.floor(baseDelay * randomFactor);
-          log('Chessist: Move complexity:', complexity.toFixed(2), '-> delay:', finalDelay, 'ms');
-        } else {
-          finalDelay = Math.floor(Math.random() * (delayRange + 1)) + minDelayMs;
-          log('Chessist: Random delay:', finalDelay, 'ms');
-        }
+    // Engine results and the live turn can arrive separately. Keep this result
+    // until the board confirms it or the round advances to another position.
+    if (autoMoveExecuting || countdownInterval || !canExecuteMove(positionKey, gameId)) return;
+    if (!moveBelongsToColor(evaluation.bestMove, currentFen, playerColor)) {
+      pendingAutoMove = null;
+      return;
+    }
 
-        if (instantMove) {
-          log('Chessist: Instant auto-move for', moveToPlay);
-          reportAutoMove('trigger', { move: moveToPlay, delayMs: 0, position: positionKey });
-          hideCountdown();
-          _executeMoveVerified(moveToPlay, positionKey, gameId);
-        } else {
-          log('Chessist: Auto-move triggered for', moveToPlay, 'with delay', finalDelay, 'ms');
-          reportAutoMove('trigger', { move: moveToPlay, delayMs: finalDelay, position: positionKey });
-          startCountdown(finalDelay, positionKey, moveToPlay, gameId);
-        }
-      } else if (!evalMatchesCurrent) {
-        log('Chessist: Skipping auto-move - stale evaluation');
+    let moveToPlay = evaluation.bestMove;
+    const pv = evaluation.pv || [];
+
+    if (shouldWinThisGame) {
+      log('Chessist: Win mode - playing best move');
+    } else if (shouldThrowThisGame && pv.length >= 3) {
+      const ourPvMoves = pv.filter((_, i) => i % 2 === 0);
+      if (ourPvMoves.length >= 2) {
+        const throwIdx = Math.min(ourPvMoves.length - 1, 1 + Math.floor(Math.random() * Math.max(1, ourPvMoves.length - 1)));
+        moveToPlay = ourPvMoves[throwIdx];
+        log('Chessist: Throw mode - playing PV even-index', throwIdx * 2, ':', moveToPlay);
       }
+    } else if (targetAccuracy < 100 && pv.length > 1) {
+      const deviationChance = (100 - targetAccuracy) / 100;
+      if (Math.random() < deviationChance) {
+        const maxIdx = Math.min(pv.length - 1, Math.ceil((100 - targetAccuracy) / 15));
+        const ourMoves = pv.filter((_, i) => i % 2 === 0);
+        const pick = Math.min(ourMoves.length - 1, 1 + Math.floor(Math.random() * maxIdx));
+        if (pick > 0 && ourMoves[pick]) {
+          moveToPlay = ourMoves[pick];
+          log('Chessist: Target accuracy', targetAccuracy, '% - deviating to PV move', pick);
+        }
+      }
+    } else if (skillLevel < 20 && pv.length > 1) {
+      const blunderChance = (20 - skillLevel) / 25;
+      if (Math.random() < blunderChance) {
+        const maxIndex = Math.min(pv.length - 1, Math.ceil((20 - skillLevel) / 4));
+        const pickIndex = Math.floor(Math.random() * (maxIndex + 1));
+        if (pickIndex > 0 && pv[pickIndex]) {
+          moveToPlay = pv[pickIndex];
+          log('Chessist: Skill level', skillLevel, '- picking move', pickIndex + 1, 'from PV:', moveToPlay);
+        }
+      }
+    }
+
+    if (!moveBelongsToColor(moveToPlay, currentFen, playerColor)) {
+      moveToPlay = evaluation.bestMove;
+    }
+
+    const minDelayMs = autoMoveDelayMin * 1000;
+    const maxDelayMs = autoMoveDelayMax * 1000;
+    const delayRange = maxDelayMs - minDelayMs;
+    let finalDelay;
+
+    if (smartTiming) {
+      const complexity = calculateMoveComplexity(moveToPlay, evaluation, currentFen);
+      const baseDelay = minDelayMs + (delayRange * complexity);
+      const randomFactor = 0.8 + (Math.random() * 0.4);
+      finalDelay = Math.floor(baseDelay * randomFactor);
+      log('Chessist: Move complexity:', complexity.toFixed(2), '-> delay:', finalDelay, 'ms');
+    } else {
+      finalDelay = Math.floor(Math.random() * (delayRange + 1)) + minDelayMs;
+      log('Chessist: Random delay:', finalDelay, 'ms');
+    }
+
+    if (instantMove) {
+      log('Chessist: Instant auto-move for', moveToPlay);
+      reportAutoMove('trigger', { move: moveToPlay, delayMs: 0, position: positionKey });
+      _executeMoveVerified(moveToPlay, positionKey, gameId);
+    } else {
+      log('Chessist: Auto-move triggered for', moveToPlay, 'with delay', finalDelay, 'ms');
+      reportAutoMove('trigger', { move: moveToPlay, delayMs: finalDelay, position: positionKey });
+      startCountdown(finalDelay, positionKey, moveToPlay, gameId);
     }
   }
 
@@ -1537,7 +1552,12 @@
 
   function setAutoMove(enabled) {
     autoMove = enabled;
-    if (!autoMove) hideCountdown();
+    if (!autoMove) clearPendingAutoMove();
+  }
+
+  function clearPendingAutoMove() {
+    pendingAutoMove = null;
+    hideCountdown();
   }
 
   function showEngineStartingMessage() {
@@ -1645,6 +1665,7 @@
     // Engine reports no legal reply for the side to move → game over. Clear the
     // arrow, skip auto-move, and nudge the rematch flow.
     if (evaluation.gameOver) {
+      clearPendingAutoMove();
       clearArrow();
       chrome.runtime.sendMessage({ type: 'WS_EVAL_UPDATE', evaluation }).catch(() => {});
       if (autoRematch || autoNewGame) checkAutoRematch();
@@ -1689,10 +1710,10 @@
 
   function canExecuteMove(expectedPosition, expectedGameId) {
     if (!isEnabled || !autoMove || document.hidden || !expectedPosition ||
-        !expectedGameId || getGameId() !== expectedGameId) return false;
+        _fenKey(currentFen) !== expectedPosition || !expectedGameId || getGameId() !== expectedGameId) return false;
 
     const board = findBoard();
-    if (!isInOwnGame(board) || getBoardSurface(board).querySelector(PREMOVE_SELECTOR)) return false;
+    if (!isInOwnGame(board) || hasActivePremove(getBoardSurface(board))) return false;
 
     const [placement, turn] = expectedPosition.split(' ');
     if (turn !== playerColor || !domConfirmsPlayerTurn(board, placement)) return false;
@@ -1704,6 +1725,7 @@
   async function _executeMoveVerified(move, positionKeyBefore, gameId) {
     const moveKey = `${gameId} ${positionKeyBefore}`;
     if (autoMoveExecuting || lastAutoMovePosition === moveKey || !canExecuteMove(positionKeyBefore, gameId)) return;
+    pendingAutoMove = null;
     autoMoveExecuting = true;
     lastAutoMovePosition = moveKey;
     const moveMode = instantMove ? 'drag' : 'click';
@@ -1748,14 +1770,14 @@
   // ============================================================
 
   function observeBoard(board) {
-    if (boardObserver) boardObserver.disconnect();
+    if (board === observedRoundBoard) return;
+    observedRoundBoard = board;
+    boardObserver?.disconnect();
 
     const rawFen = extractFEN(board);
-    if (rawFen && rawFen !== currentFen) {
+    const fen = rawFen?.startsWith(STARTING_PLACEMENT) ? STARTING_FEN : rawFen;
+    if (fen && fen !== currentFen) {
       const previousFen = currentFen;
-      const fen = rawFen.startsWith(STARTING_PLACEMENT) ? STARTING_FEN : rawFen;
-      if (fen === currentFen) return;
-
       currentFen = fen;
       // LICHESS: detect flip from orientation-black class
       playerColor = isInOwnGame()
@@ -1769,7 +1791,7 @@
 
       const isNewGameLoad = previousFen !== null;
       if (isNewGameLoad) {
-        hideCountdown();
+        clearPendingAutoMove();
         prevCpWhite = null;
         moveAccuracies = [];
         accuracyEvalPending = false;
@@ -1801,16 +1823,13 @@
     });
 
     // Also observe cg-wrap for orientation changes
-    const wrapObserver = new MutationObserver(() => {
-      checkForPositionChange(false);
-    });
-    wrapObserver.observe(board, {
+    boardObserver.observe(board, {
       attributes: true,
       attributeFilter: ['class']
     });
 
     // Poll fallback — safety net only
-    setInterval(() => checkForPositionChange(false), 250);
+    boardPollInterval ??= setInterval(() => checkForPositionChange(false), 250);
 
     // Mouse release on board (primary trigger)
     cgBoard.addEventListener('mouseup', () => {
@@ -1848,23 +1867,26 @@
       if (!board) { log('Chessist: No board found'); return; }
 
       const cgBoard = getBoardSurface(board);
-      const hasPremove = cgBoard.querySelector(PREMOVE_SELECTOR);
-      if (hasPremove) { log('Chessist: Premove detected, skipping eval'); return; }
+      if (hasActivePremove(cgBoard)) { log('Chessist: Premove detected, skipping eval'); return; }
 
       let newFen = extractFEN(board);
       const samePlacement = !!(currentFen && newFen &&
         currentFen.split(' ')[0] === newFen.split(' ')[0]);
       // A legal chess move always changes piece placement. Late clock/highlight
       // mutations must not overwrite the turn we already inferred from the move.
-      if (samePlacement) newFen = currentFen;
+      if (samePlacement) {
+        tryPendingAutoMove();
+        return;
+      }
 
-      const deltaTurn = samePlacement ? null : inferTurnFromBoardDelta(currentFen, newFen);
+      const deltaTurn = inferTurnFromBoardDelta(currentFen, newFen);
       if (newFen && deltaTurn) {
         const parts = newFen.split(' ');
         parts[1] = deltaTurn;
         newFen = parts.join(' ');
       }
       if (newFen && newFen !== currentFen) {
+        clearPendingAutoMove();
         clearArrow();
 
         const isStartingPosition = newFen.startsWith(STARTING_PLACEMENT);
@@ -1878,7 +1900,6 @@
 
         if (isNewGame) {
           log('Chessist: New game detected, resetting engine');
-          hideCountdown();
           currentBestMove = null;
 
           const oldGameId = getGameId();
@@ -1966,7 +1987,6 @@
           evalBar?.classList.add('loading');
           setTimeout(() => requestEval(fenForEval, isMouseRelease), evalDelay);
         } else {
-          hideCountdown();
           evalBar?.classList.add('loading');
           if (prevCpWhite !== null) {
             accuracyEvalPending = true;
@@ -2118,10 +2138,8 @@
           turnIndicatorEl = null; arrowOverlay = null; currentBestMove = null;
           accuracyEl = null;
         }
-        if (!evalBar) {
-          createEvalBar(board);
-          observeBoard(board);
-        }
+        if (!evalBar) createEvalBar(board);
+        if (board !== observedRoundBoard) observeBoard(board);
       }
 
       if (autoRematch || autoNewGame) checkAutoRematch();
@@ -2140,6 +2158,7 @@
     if (!data) return;
     if (data.enabled !== undefined) {
       isEnabled = data.enabled;
+      if (!isEnabled) clearPendingAutoMove();
       if (overlayMode) {
         if (!isEnabled) {
           if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)
@@ -2224,6 +2243,7 @@
       try {
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
+          if (!isEnabled) clearPendingAutoMove();
           if (overlayMode) {
             if (!isEnabled) {
               if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)

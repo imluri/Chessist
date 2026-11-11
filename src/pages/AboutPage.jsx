@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import logo from '../assets/logo.png'
 import Check from '../components/controls/Check'
 
-const VERSION = '2.0.8'
+const VERSION = '2.0.9'
 // Baked at build time when git is available (see vite.config.js). Empty for source-ZIP builds.
 const BUILD_SHA = (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '')
 const RELEASES_URL = 'https://github.com/imluri/Chessist/releases'
@@ -30,12 +30,19 @@ function Updates({ status, onChange }) {
   const [applyError, setApplyError] = useState('')
   const [beta, setBetaState] = useState(false)
   const [log, setLog] = useState('')
+  const [downloadProgress, setDownloadProgress] = useState(0)
   const logRef = useRef(null)
 
   useEffect(() => {
     window.chessist.getBeta().then(setBetaState).catch(() => {})
-    const off = window.chessist.onUpdateLog((line) => setLog(prev => prev + line))
-    return off
+    return window.chessist.onUpdateLog((line) => {
+      const progress = /^Downloading update…(?: (\d+)%)?$/.exec(line.trim())
+      if (progress) {
+        setDownloadProgress(Number(progress[1] ?? 0))
+      } else {
+        setLog(prev => prev + line)
+      }
+    })
   }, [])
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [log])
 
@@ -54,6 +61,7 @@ function Updates({ status, onChange }) {
     setApplying(true)
     setApplyError('')
     setLog('')
+    setDownloadProgress(0)
     try {
       const result = await window.chessist.applyUpdate()
       if (!result.ok) {
@@ -102,6 +110,7 @@ function Updates({ status, onChange }) {
   const head = status?.head || BUILD_SHA
   const canApply = status?.available && !status.manual && (!status.installer || status.canApply)
   const releaseUrl = status?.tag ? `${RELEASES_URL}/tag/${encodeURIComponent(status.tag)}` : RELEASES_URL
+  const installerStatus = applying && status?.installer ? log.trim() : null
 
   return (
     <div className="scard" style={{ padding: 14, marginTop: 8 }}>
@@ -114,9 +123,13 @@ function Updates({ status, onChange }) {
         {' '}· <span>{channelName} channel</span>
       </div>
 
-      <div role="status" style={{ fontSize: 12, color: applyError ? 'rgb(var(--status-red))' : color, marginBottom: 12 }}>
-        {applyError || (applying ? 'Updating…' : line)}
-      </div>
+      {installerStatus === '' ? (
+        <progress className="update-progress" aria-label="Downloading update" value={downloadProgress} max={100} />
+      ) : (
+        <div role="status" style={{ fontSize: 12, color: applyError ? 'rgb(var(--status-red))' : color, marginBottom: 12 }}>
+          {applyError || (applying ? installerStatus || 'Updating…' : line)}
+        </div>
+      )}
 
       {status && !status.installer && (
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, cursor: 'pointer' }}>
@@ -140,7 +153,7 @@ function Updates({ status, onChange }) {
         </button>
       </div>
 
-      {(applying || log) && (
+      {!status?.installer && (applying || log) && (
         <pre ref={logRef} style={{
           marginTop: 12, maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           background: 'rgb(var(--bg))', border: '1px solid rgb(var(--border))', borderRadius: 'var(--radius-sm)',

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.9] — 2026-11-12
+
+- Fix Lichess stalls after reconnecting or when an engine result arrives before the live board and turn are ready.
+- Show a progress bar while downloading a Windows installer update in **About → Updates**.
+
 ## [2.0.8] — 2026-11-12
 
 - Recheck the live Lichess board and turn before sending an automatic move. Drop stale moves and avoid retries when input may already have reached the board.

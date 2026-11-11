@@ -47,6 +47,18 @@ button:focus:not(:focus-visible) { outline: none; }
 .srow { border-bottom: 1px solid rgb(var(--border)); }
 .scard .srow:last-child { border-bottom: none; }
 
+.update-progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin: 8px 0 12px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.update-progress::-webkit-progress-bar { background: rgb(var(--border)); }
+.update-progress::-webkit-progress-value { background: rgb(var(--accent)); }
+
 /* Custom slider (.cslider) — flat track (bg set inline) + square accent thumb. */
 input.cslider {
   -webkit-appearance: none;
