@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.7] — 2026-11-12
+
+- Recognize current Lichess game URLs and detect the player's own round before the clocks start.
+- Keep spectator rounds read-only even when a clock is running or a player color is selected manually.
+
 ## [2.0.6] — 2026-11-12
 
 - The bundled browser extension reloads automatically after future desktop updates when its folder contains the newer version.

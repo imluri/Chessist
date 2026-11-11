@@ -68,7 +68,7 @@
   let autoMoveDelayMin = 0.1;
   let autoMoveDelayMax = 0.3;
   let skillLevel = 20;
-  let lastGameUrl = null;
+  let lastGameId = null;
 
   function log(...args) {
     if (!stealthMode) console.log(...args);
@@ -800,33 +800,22 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Lichess game ID (8-char alphanumeric at start of path)
+  // Round links can include a /game prefix, a player suffix, or a board color.
   function getGameId() {
-    return window.location.pathname.match(/^\/([a-zA-Z0-9]{8})/)?.[1] || null;
+    return window.location.pathname.match(/^\/(?:game\/)?([a-zA-Z0-9]{8})(?:[a-zA-Z0-9]{4}|\/(?:white|black))?\/?$/)?.[1] || null;
   }
 
   // True only when the user is playing their own game (not spectating home/TV)
   function isInOwnGame() {
     if (!getGameId()) return false;
 
-    // A manual color is an explicit signal from the desktop app. This also
-    // covers computer games, where page-owned window.lichess data is not
-    // visible from an extension content script's isolated world.
-    if (manualPlayerColor === 'w' || manualPlayerColor === 'b') return true;
-
-    // In automatic mode rely on DOM owned by the round page. Player controls
-    // are absent while merely spectating a game.
     const round = document.querySelector('.round__app, main.round, .round');
-    if (!round || !findBoard()) return false;
+    const board = findBoard();
+    if (!round || !board || !round.contains(board)) return false;
 
-    return !!round.querySelector([
-      '.rcontrols .resign',
-      '.rcontrols .draw',
-      '.rcontrols button',
-      '.round__now-playing',
-      '.rclock-bottom.running',
-      '.rclock-bottom.emerg'
-    ].join(','));
+    // Player controls exist before the clocks start. Spectators can see the
+    // same URL and clocks, and choosing a color does not make them a player.
+    return !!round.querySelector('.rcontrols .ricons, .rcontrols .resign, .rcontrols .draw');
   }
 
   // ============================================================
@@ -2013,11 +2002,9 @@
 
         let isNewGame = isStartingPosition && !wasStartingPosition && currentFen !== null;
 
-        const currentUrl = location.href;
         const currentGameId = getGameId();
-        const lastGameId = lastGameUrl ? lastGameUrl.match(/\/([a-zA-Z0-9]{8})/)?.[1] : null;
         if (currentGameId && lastGameId && currentGameId !== lastGameId) isNewGame = true;
-        lastGameUrl = currentUrl;
+        lastGameId = currentGameId;
 
         if (isNewGame) {
           log('Chessist: New game detected, resetting engine');
