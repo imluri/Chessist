@@ -66,7 +66,8 @@ latest release.
   arrows, auto-move + timing, behavior, win/loss balance) and **Engine** (skill, ELO, threads, hash).
 - **Setup** — Stockfish / Overlay / Extension status, each in its own card, plus a re-download button.
 
-The extension popup only shows a connectivity dot — everything is configured in the desktop app.
+The extension popup shows whether it can reach the desktop app and whether Stockfish is ready.
+If Stockfish is unavailable, open **Setup → Stockfish engine** for the error and a retry button.
 
 ## Develop
 

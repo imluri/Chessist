@@ -16,6 +16,7 @@ let mainWindow = null
 let engine = null
 let overlay = null
 let bridge = null
+let stockfishTask = null
 
 // ── Settings persistence (userData/chessist-settings.json = { engine, game }) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
@@ -60,6 +61,7 @@ function saveAll() {
 
 const componentStatus = {
   stockfishOk: false,
+  stockfishState: 'starting',
   overlayOk: false,
   extensionConnected: false,   // extension installed (service worker present)
   chessConnected: false,       // a chess tab (content script) is active
@@ -76,6 +78,12 @@ function sendToRenderer(channel, payload) {
 function pushStatus(patch) {
   Object.assign(componentStatus, patch)
   sendToRenderer('status', componentStatus)
+}
+
+function updateStockfishStatus({ status, message }) {
+  const ready = status === 'ready'
+  pushStatus({ stockfishOk: ready, stockfishState: status, message: ready ? '' : message })
+  bridge?.broadcastStatus({ status, message })
 }
 
 function createWindow() {
@@ -99,16 +107,11 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
-async function startSubsystems() {
+function startSubsystems() {
   overlay = new Overlay(isDev, process.resourcesPath, (s) => pushStatus(s))
   engine = new Engine(
     (ev) => { bridge?.broadcastEval(ev); sendToRenderer('eval', ev) },
-    (s) => {
-      if (s.status === 'ready') pushStatus({ stockfishOk: true, message: '' })
-      else if (s.status === 'error') pushStatus({ stockfishOk: false, message: s.message })
-      else pushStatus({ message: s.message })
-      bridge?.broadcastStatus(s)
-    }
+    updateStockfishStatus
   )
   // Restore saved settings before first start (engine applied on uciok).
   const saved = loadAll()
@@ -117,28 +120,31 @@ async function startSubsystems() {
   Object.assign(appPrefs, saved.app || {})
   bridge = new Bridge(engine, overlay, (c) => pushStatus(c))
   bridge.getGameSettings = () => gameSettings
+  bridge.getStockfishState = () => componentStatus.stockfishState
   bridge.onPosition = (p) => sendToRenderer('position', p)
   bridge.start()
   overlay.start()
 
-  const userData = app.getPath('userData')
-  const sfPath = await ensureStockfish(userData, (s) => {
-    pushStatus({ message: s.message, stockfishOk: s.status === 'ready' })
-    bridge?.broadcastStatus(s)
-  })
-  if (sfPath) engine.start(sfPath)
+  prepareStockfish()
 }
 
-async function redownloadStockfish() {
-  engine?.kill()
-  const dest = path.join(app.getPath('userData'), 'stockfish.exe')
-  try { fs.rmSync(dest, { force: true }) } catch {}
-  pushStatus({ stockfishOk: false, message: 'Stockfish: re-downloading...' })
-  const sfPath = await ensureStockfish(app.getPath('userData'), (s) => {
-    pushStatus({ message: s.message, stockfishOk: s.status === 'ready' })
-    bridge?.broadcastStatus(s)
-  })
-  if (sfPath) engine.start(sfPath)
+function prepareStockfish(redownload = false) {
+  if (stockfishTask) return stockfishTask
+  stockfishTask = (async () => {
+    try {
+      const userData = app.getPath('userData')
+      if (redownload) {
+        updateStockfishStatus({ status: 'downloading', message: 'Stockfish: re-downloading…' })
+        await engine.kill()
+        fs.rmSync(path.join(userData, 'stockfish.exe'), { force: true })
+      }
+      const sfPath = await ensureStockfish(userData, updateStockfishStatus)
+      if (sfPath) engine.start(sfPath)
+    } catch (e) {
+      updateStockfishStatus({ status: 'error', message: `Stockfish setup failed: ${e.message}` })
+    }
+  })().finally(() => { stockfishTask = null })
+  return stockfishTask
 }
 
 function registerIpc() {
@@ -162,7 +168,7 @@ function registerIpc() {
     bridge?.broadcastSettings(gameSettings)
     return gameSettings
   })
-  ipcMain.handle('stockfish:redownload', () => redownloadStockfish())
+  ipcMain.handle('stockfish:redownload', () => prepareStockfish(true))
   ipcMain.handle('update:get-beta', () => appPrefs.betaUpdates)
   ipcMain.handle('update:set-beta', (_e, beta) => { appPrefs.betaUpdates = !!beta; saveAll(); return appPrefs.betaUpdates })
   ipcMain.handle('update:check', () => updater.checkForUpdate(appPrefs.betaUpdates))
@@ -220,5 +226,5 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
-app.on('before-quit', () => { engine?.kill(); overlay?.kill(); bridge?.stop() })
+app.on('before-quit', () => { engine?.kill().catch(() => {}); overlay?.kill(); bridge?.stop() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

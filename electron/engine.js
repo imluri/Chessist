@@ -33,6 +33,8 @@ class Engine {
     this._path = null         // stockfish path (for auto-restart)
     this._intentional = false // suppress restart on deliberate kill
     this._restarts = 0        // bounded auto-restart counter
+    this._restartTimer = null
+    this._lastRequest = null  // replay after startup or an engine restart
     this.hashMb = opts.hashMb || defaultHashMb()
     this.threads = opts.threads || Math.max(1, os.cpus().length - 1)
     // Engine settings owned by the desktop app (Engine page). Re-applied on every
@@ -48,35 +50,51 @@ class Engine {
   }
 
   start(stockfishPath) {
+    if (this.proc) return
     if (stockfishPath) this._path = stockfishPath
+    clearTimeout(this._restartTimer)
     this._intentional = false
+    this.ready = false
+    this.multipv = 1
+    this.onStatus?.({ status: 'starting', message: 'Stockfish: starting…' })
     const proc = spawn(this._path, [], { windowsHide: true })
     this.proc = proc
+    let startupError
+    const startupTimer = setTimeout(() => {
+      if (this.proc !== proc || this.ready || this._intentional) return
+      startupError = 'Stockfish did not respond during startup'
+      proc.kill()
+    }, 30000)
     proc.stdout.setEncoding('utf8')
+    proc.stderr.resume()
     let buf = ''
     proc.stdout.on('data', (chunk) => {
+      if (this.proc !== proc || this._intentional) return
       buf += chunk
       let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i).trim()
         buf = buf.slice(i + 1)
+        if (line === 'readyok') clearTimeout(startupTimer)
         this._handle(line)
       }
     })
     // Swallow stream errors (e.g. EPIPE when Stockfish dies mid-write) so they
     // never become an uncaught exception that crashes the app.
-    proc.on('error', () => {})
+    proc.on('error', (e) => { startupError ||= `Stockfish could not start: ${e.code || e.message}` })
     proc.stdin.on('error', () => {})
     proc.stdout.on('error', () => {})
-    proc.on('exit', () => {
+    proc.once('close', (code) => {
+      clearTimeout(startupTimer)
+      if (this.proc !== proc) return
       this.ready = false
-      if (this.proc === proc) this.proc = null
+      this.proc = null
       if (this._intentional) return
-      this.onStatus?.({ status: 'error', message: 'Stockfish exited' })
+      this.onStatus?.({ status: 'error', message: startupError || `Stockfish exited${code === null ? '' : ` (code ${code})`}` })
       // Bounded auto-restart so a one-off crash recovers without looping forever.
-      if (this._path && this._restarts < 3) {
+      if (!startupError && this._path && this._restarts < 3) {
         this._restarts++
-        setTimeout(() => { if (!this.proc) this.start() }, 1200)
+        this._restartTimer = setTimeout(() => this.start(), 1200)
       }
     })
     this._send('uci')
@@ -96,9 +114,11 @@ class Engine {
       return
     }
     if (line === 'readyok') {
+      if (this.ready) return
       this.ready = true
       this._restarts = 0
       this.onStatus?.({ status: 'ready', message: 'Engine ready' })
+      if (this._lastRequest) this._search(this._lastRequest)
       return
     }
     if (line.startsWith('info depth')) {
@@ -133,7 +153,11 @@ class Engine {
   }
 
   evaluate(fen, depth, multipv) {
-    if (!this.ready) return
+    this._lastRequest = { fen, depth, multipv }
+    if (this.ready) this._search(this._lastRequest)
+  }
+
+  _search({ fen, depth, multipv }) {
     if (depth) this.depth = depth
     if (multipv && multipv !== this.multipv) { this.multipv = multipv; this._send(`setoption name MultiPV value ${multipv}`) }
     this.curFen = fen
@@ -145,8 +169,8 @@ class Engine {
   }
 
   newGame() {
+    this.stop()
     if (!this.ready) return
-    this._send('stop')
     this._send('ucinewgame')
     this._send('isready')
     this.curFen = null
@@ -183,8 +207,22 @@ class Engine {
     }
   }
 
-  stop() { this._send('stop') }
-  kill() { this._intentional = true; try { this.proc?.kill() } catch {} }
+  stop() {
+    this._lastRequest = null
+    if (this.ready) this._send('stop')
+  }
+
+  kill() {
+    this._intentional = true
+    this.ready = false
+    clearTimeout(this._restartTimer)
+    const proc = this.proc
+    if (!proc) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      proc.once('close', resolve)
+      try { proc.kill() } catch (e) { reject(e) }
+    })
+  }
 }
 
 module.exports = { parseInfoLine, defaultHashMb, Engine }

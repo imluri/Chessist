@@ -3,6 +3,11 @@ import Board from '../components/Board'
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const piecesKey = (fen) => (fen ? fen.split(' ')[0] : '')
+const STOCKFISH_LABELS = {
+  starting: 'Starting Stockfish…',
+  downloading: 'Downloading Stockfish…',
+  error: 'Stockfish unavailable',
+}
 
 // Locate a side's king on the board, e.g. ('…', 'w') → 'e1'. Returns null if absent.
 function kingSquare(fen, color) {
@@ -27,7 +32,7 @@ function arrowsFromEval(ev) {
     .map((m, i) => ({ from: m.slice(0, 2), to: m.slice(2, 4), idx: i }))
 }
 
-export default function EvaluationPage({ ev, pos, status }) {
+export default function EvaluationPage({ ev, pos, status, onOpenSetup }) {
   const chessOn = status.chessConnected        // a chess tab is active
   const extOn = status.extensionConnected      // extension installed (service worker)
   const boardFen = pos?.fen || ev?.fen || START_FEN
@@ -35,7 +40,7 @@ export default function EvaluationPage({ ev, pos, status }) {
   const hasPosition = !!(pos?.fen || ev?.fen)
 
   const evalMatches = ev?.fen && (!pos?.fen || piecesKey(ev.fen) === piecesKey(pos.fen))
-  const showEval = chessOn && ev && evalMatches
+  const showEval = status.stockfishState === 'ready' && chessOn && ev && evalMatches
   const gameOver = showEval && ev.gameOver ? ev.gameOver : null
   const arrows = (showEval && !gameOver) ? arrowsFromEval(ev) : []
 
@@ -47,19 +52,23 @@ export default function EvaluationPage({ ev, pos, status }) {
     ? `Checkmate — ${ev.winner === 'w' ? 'White' : 'Black'} wins`
     : gameOver === 'stalemate' ? 'Stalemate — Draw' : null
 
-  // Three states: live game · extension up but no game · nothing connected.
-  // dot/label/hint reflect which.
   const site = status.chessSite || 'a chess site'
-  let dot, label, labelColor, hint
-  if (chessOn) {
-    dot = 'rgb(var(--status-yellow))'; labelColor = 'rgb(var(--fg-muted))'
+  const stockfishFailed = status.stockfishState === 'error'
+  let dot = 'rgb(var(--status-yellow))'
+  let labelColor = 'rgb(var(--fg-muted))'
+  let label, hint
+  if (STOCKFISH_LABELS[status.stockfishState]) {
+    label = STOCKFISH_LABELS[status.stockfishState]
+    if (stockfishFailed) dot = labelColor = 'rgb(var(--status-red))'
+  } else if (chessOn) {
     label = hasPosition ? 'Analyzing…' : `On ${site}`
     hint = hasPosition ? '' : `You're on ${site} — start a game to see analysis.`
   } else if (extOn) {
-    dot = 'rgb(var(--status-yellow))'; labelColor = 'rgb(var(--fg-muted))'; label = 'Connected to extension'
+    label = 'Connected to extension'
     hint = "Connected to the extension, but couldn't detect a game. Open a game on chess.com or lichess.org."
   } else {
-    dot = 'rgb(var(--status-red))'; labelColor = 'rgb(var(--status-red))'; label = 'Disconnected'
+    dot = labelColor = 'rgb(var(--status-red))'
+    label = 'Disconnected'
     hint = 'No connection. Open the Setup tab to load the extension, then open a game.'
   }
 
@@ -74,7 +83,15 @@ export default function EvaluationPage({ ev, pos, status }) {
         {showEval ? <EvalPanel ev={ev} /> : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
             <div style={{ width: 7, height: 7, borderRadius: '50%', background: dot }} />
-            <span style={{ color: labelColor, fontWeight: 600 }}>{label}</span>
+            <span role="status" style={{ color: labelColor, fontWeight: 600 }}>{label}</span>
+            {stockfishFailed && (
+              <button type="button" onClick={onOpenSetup} style={{
+                padding: '4px 8px', border: '1px solid rgb(var(--border))', borderRadius: 'var(--radius-sm)',
+                background: 'rgb(var(--surface))', color: 'rgb(var(--fg))', fontSize: 12, cursor: 'pointer',
+              }}>
+                Open Setup
+              </button>
+            )}
           </div>
         )}
       </div>

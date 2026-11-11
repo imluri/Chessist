@@ -9,7 +9,7 @@ import AboutPage from './pages/AboutPage'
 const piecesKey = (fen) => (fen ? fen.split(' ')[0] : '')
 
 export default function App() {
-  const [status, setStatus] = useState({ stockfishOk: false, overlayOk: false, extensionConnected: false, chessConnected: false, chessSite: null, message: '' })
+  const [status, setStatus] = useState({ stockfishOk: false, stockfishState: 'starting', overlayOk: false, extensionConnected: false, chessConnected: false, chessSite: null, message: '' })
   const [ev, setEv] = useState(null)
   const [pos, setPos] = useState(null)        // { fen, flipped } — authoritative current position
   const [page, setPage] = useState('evaluation')
@@ -19,7 +19,10 @@ export default function App() {
 
   useEffect(() => {
     window.chessist.getStatus().then(setStatus)
-    const offS = window.chessist.onStatus(setStatus)
+    const offS = window.chessist.onStatus((nextStatus) => {
+      setStatus(nextStatus)
+      if (nextStatus.stockfishState !== 'ready') setEv(null)
+    })
     const offP = window.chessist.onPosition?.((p) => { posRef.current = p; setPos(p) })
     const offE = window.chessist.onEval((e) => {
       // Ignore speculative / stale evals — only show ones for the current board.
@@ -56,7 +59,7 @@ export default function App() {
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0, overflowY: page === 'evaluation' ? 'hidden' : 'auto' }}>
-            {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} />}
+            {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} onOpenSetup={() => setPage('setup')} />}
             {page === 'setup' && <SetupPage status={status} />}
             {page === 'about' && <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />}
           </div>

@@ -9,6 +9,7 @@ const btn = {
 const STATUS = {
   ok:      { color: 'rgb(var(--status-green))',  glow: '0 0 6px rgba(34,197,94,0.7)' },
   working: { color: 'rgb(var(--status-yellow))', glow: '0 0 6px rgba(234,179,8,0.7)' },
+  error:   { color: 'rgb(var(--status-red))',    glow: 'none' },
   off:     { color: 'rgb(var(--fg-dim))',        glow: 'none' },
 }
 
@@ -33,17 +34,23 @@ function StockfishModule({ status }) {
     setBusy(true)
     try { await window.chessist.redownloadStockfish() } finally { setBusy(false) }
   }
-  const ready = status.stockfishOk
-  const downloading = !ready && status.message?.startsWith('Stockfish')
-  const state = ready ? 'ok' : downloading ? 'working' : 'working'
-  const label = ready ? 'ready' : downloading ? status.message.replace('Stockfish: ', '').replace('Stockfish ', '') : 'starting'
+  const { stockfishState, message } = status
+  const failed = stockfishState === 'error'
+  const downloading = stockfishState === 'downloading'
+  const state = failed ? 'error' : stockfishState === 'ready' ? 'ok' : 'working'
+  const disabled = busy || downloading
 
   return (
-    <ModuleCard title="Stockfish engine" state={state} statusLabel={label}>
+    <ModuleCard title="Stockfish engine" state={state} statusLabel={failed ? 'unavailable' : stockfishState}>
       <p style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6, marginBottom: 12 }}>
         Native Stockfish powers analysis. It's downloaded automatically on first run and stored with the app.
       </p>
-      <button onClick={redownload} disabled={busy} style={{ ...btn, opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }}>
+      {(downloading || failed) && message && (
+        <p role="status" style={{ fontSize: 12, color: failed ? STATUS.error.color : 'rgb(var(--fg-muted))', lineHeight: 1.6, marginBottom: 12 }}>
+          {message}
+        </p>
+      )}
+      <button onClick={redownload} disabled={disabled} style={{ ...btn, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}>
         {busy ? 'Re-downloading…' : 'Re-download Stockfish'}
       </button>
     </ModuleCard>

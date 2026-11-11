@@ -2,8 +2,8 @@
 body { width: 240px; background: #0a0a0a; color: #fff; font-family: system-ui, sans-serif; }
 .wrap { padding: 14px 16px; }
 .row { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: #787878; }
+.dot { width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: #787878; }
 .dot.ok { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.7); }
+.dot.waiting { background: #eab308; }
 .dot.off { background: #ef4444; }
 .hint { margin-top: 8px; font-size: 11px; line-height: 1.5; color: #969696; }
-strong { color: #792A9E; }

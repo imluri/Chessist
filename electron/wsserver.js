@@ -17,6 +17,7 @@ class Bridge {
     this.presenceClients = new Set()  // service worker(s)
     this.chessSite = null             // e.g. 'Chess.com' | 'Lichess'
     this.getGameSettings = null // set by main: () => gameSettings
+    this.getStockfishState = null
     this.onPosition = null      // set by main: (msg) => void
   }
 
@@ -37,6 +38,7 @@ class Bridge {
       ws.on('close', () => {
         const a = this.contentClients.delete(ws)
         const b = this.presenceClients.delete(ws)
+        if (a && !this.contentClients.size) this.engine.stop()
         if (a || b) this._emit()
       })
     })
@@ -69,6 +71,12 @@ class Bridge {
   _onMessage(ws, raw) {
     let msg
     try { msg = JSON.parse(raw.toString()) } catch { return }
+    if (!msg || typeof msg !== 'object') return
+
+    if (msg.type === 'get_status') {
+      ws.send(JSON.stringify({ type: 'app_status', stockfishState: this.getStockfishState?.() || 'starting' }))
+      return
+    }
 
     if (msg.type === 'identify') {
       if (msg.role === 'content') {

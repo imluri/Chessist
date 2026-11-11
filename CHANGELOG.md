@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.3] — 2026-11-12
+
+### Fixed
+
+- Windows setup downloads the Stockfish build for the correct CPU and replaces a cached executable built for the wrong architecture.
+- Analysis requests made while Stockfish starts now run as soon as the engine is ready.
+- Setup reports launch and download failures and offers a retry. The browser popup shows engine readiness separately from the desktop connection.
+
 ## [2.0.2] — 2026-06-09
 
 ### Fixed
