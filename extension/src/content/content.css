@@ -1,5 +1,25 @@
 /* Chessist - Evaluation Bar Styles */
 
+#chessist-fair-play-notice {
+  position: fixed;
+  right: 12px;
+  bottom: 44px;
+  z-index: 99999;
+  width: max-content;
+  max-width: min(350px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid #98772d;
+  border-radius: 6px;
+  background: #211c12;
+  color: #fff4db;
+  font: 13px/1.45 'Segoe UI', sans-serif;
+}
+
+#chessist-fair-play-notice a {
+  color: #ffd784;
+  text-decoration: underline;
+}
+
 /* When using Chess.com's native container */
 #board-layout-evaluation {
   display: block !important;

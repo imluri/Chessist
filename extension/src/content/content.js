@@ -1925,8 +1925,9 @@
     }
   }, 250);
 
-  // Fallback: re-show overlay every 1s — catches focus-restore, post-refresh board-ready, etc.
+  // Reconcile page UI after SPA navigation and re-show the overlay after focus changes.
   setInterval(() => {
+    updateFairPlayNotice();
     if (!overlayMode || !isEnabled || !_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
     sendPositionUpdate();
   }, 1000);
@@ -2413,6 +2414,34 @@
     }
   }
 
+  function updateFairPlayNotice() {
+    if (!document.body) return;
+
+    const path = window.location.pathname.replace(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/)/i, '');
+    const playPage = /^\/(?:play|live|daily|game\/(?:live|daily))(?:\/|$)/.test(path);
+    const practicePage = /^\/play\/(?:computer|coach)(?:\/|$)/.test(path);
+    const notice = document.getElementById('chessist-fair-play-notice');
+
+    if (!isEnabled || !autoMove || !playPage || practicePage) {
+      notice?.remove();
+      return;
+    }
+    if (notice) return;
+
+    const message = document.createElement('div');
+    message.id = 'chessist-fair-play-notice';
+    message.setAttribute('role', 'status');
+    message.textContent = 'Chessist Auto-move is enabled. Chess.com can close accounts for engine assistance during games against other players. ';
+
+    const rules = document.createElement('a');
+    rules.href = 'https://support.chess.com/en/articles/8568369-what-do-i-need-to-know-about-fair-play-on-chess-com';
+    rules.target = '_blank';
+    rules.rel = 'noopener noreferrer';
+    rules.textContent = 'Fair Play rules';
+    message.append(rules);
+    document.body.append(message);
+  }
+
   // Show refresh message when extension context is invalidated
   function showEngineStartingMessage() {
     let el = document.getElementById('chessist-engine-status');
@@ -2861,6 +2890,7 @@
   // Main initialization
   async function init() {
     await loadSettings();
+    updateFairPlayNotice();
 
     // The desktop app is the only engine now — always connect so we can request
     // evals, identify to the app, and receive pushed settings (regardless of mode/enabled).
@@ -3104,6 +3134,7 @@
     if (data.throwRandom !== undefined) throwRandom = data.throwRandom;
     if (data.lossRandom !== undefined) lossRandom = data.lossRandom;
     if (data.targetAccuracy !== undefined) targetAccuracy = data.targetAccuracy;
+    if (data.enabled !== undefined || data.autoMove !== undefined) updateFairPlayNotice();
   }
 
   // Listen for messages from popup/background
@@ -3114,6 +3145,7 @@
       try {
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
+          updateFairPlayNotice();
           if (overlayMode) {
             if (!isEnabled) {
               if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)
@@ -3149,6 +3181,7 @@
           // Update autoMove if provided
           if (message.autoMove !== undefined) {
             autoMove = message.autoMove;
+            updateFairPlayNotice();
             // Reset last auto-move position when toggled to allow fresh auto-move
             if (autoMove) {
               lastAutoMovePosition = null;

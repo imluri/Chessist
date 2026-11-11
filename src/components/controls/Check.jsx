@@ -1,9 +1,10 @@
 // Custom checkbox — square, sharp-cornered, accent fill + checkmark when on.
-export default function Check({ checked, onChange, disabled = false }) {
+export default function Check({ checked, onChange, disabled = false, label }) {
   return (
     <button
       type="button"
       role="checkbox"
+      aria-label={label}
       aria-checked={checked}
       disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}

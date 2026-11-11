@@ -1,4 +1,8 @@
+import { useRef, useState } from 'react'
 import { IconEval, IconGame, IconSetup, IconAbout } from './icons'
+import SettingInput from './controls/SettingInput'
+import ShortcutPicker from './ShortcutPicker'
+import { SETTING_SHORTCUTS, formatSettingValue } from '../data/settingControls'
 
 const ITEMS = [
   { id: 'evaluation', label: 'Evaluation', Icon: IconEval },
@@ -6,23 +10,28 @@ const ITEMS = [
   { id: 'about',      label: 'About',      Icon: IconAbout },
 ]
 
-export default function Sidebar({ page, setPage, status, onSettings }) {
+const SHORTCUTS_BY_ID = new Map(SETTING_SHORTCUTS.map(setting => [setting.id, setting]))
+
+export default function Sidebar({ page, setPage, status, onSettings, settings, shortcutIds, shortcutError, onSettingChange, onShortcutsChange }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const addButton = useRef(null)
   const ready = status.stockfishOk && status.extensionConnected
   const dotColor = ready ? 'rgb(var(--status-green))' : 'rgb(var(--status-yellow))'
   const dotGlow = ready ? '0 0 6px rgba(34,197,94,0.7)' : '0 0 6px rgba(234,179,8,0.7)'
 
   return (
-    <div style={{
+    <aside style={{
       width: 180, flexShrink: 0, display: 'flex', flexDirection: 'column',
       borderRight: '1px solid rgb(var(--border))', background: 'rgb(var(--bg))',
     }}>
-      <nav style={{ padding: '8px 0', flex: 1 }}>
+      <nav aria-label="Main navigation" style={{ padding: '8px 0 2px' }}>
         {ITEMS.map(({ id, label, Icon }) => {
           const active = page === id
           return (
             <button
               key={id}
               onClick={() => setPage(id)}
+              aria-current={active ? 'page' : undefined}
               className={active ? 'nav-item active' : 'nav-item'}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, width: '100%',
@@ -38,6 +47,36 @@ export default function Sidebar({ page, setPage, status, onSettings }) {
           )
         })}
       </nav>
+      <button ref={addButton} type="button" className="sidebar-add-shortcut" aria-haspopup="dialog"
+        disabled={!shortcutIds} onClick={() => setPickerOpen(true)}>
+        <span aria-hidden="true">+</span> Add shortcuts
+      </button>
+      <section className="sidebar-shortcuts" aria-label="Setting shortcuts">
+        {shortcutIds?.map(id => {
+          const setting = SHORTCUTS_BY_ID.get(id)
+          if (!setting || !settings[setting.scope]) return null
+          const values = settings[setting.scope]
+          const isToggle = setting.type === 'toggle'
+          return (
+            <div key={id} className="sidebar-shortcut">
+              <div className="sidebar-shortcut-header">
+                <span className="sidebar-shortcut-label">{setting.label}</span>
+                {setting.type === 'range' && <span className="sidebar-shortcut-value">{formatSettingValue(setting, values[setting.key])}</span>}
+                {isToggle && <SettingInput setting={setting} values={values} compact
+                  onChange={value => onSettingChange(setting.scope, setting.key, value)} />}
+                <button type="button" className="shortcut-remove" aria-label={`Remove ${setting.label} shortcut`}
+                  title={`Remove ${setting.label} shortcut`} onClick={() => {
+                    onShortcutsChange(shortcutIds.filter(shortcutId => shortcutId !== id))
+                    addButton.current?.focus()
+                  }}>×</button>
+              </div>
+              {!isToggle && <SettingInput setting={setting} values={values} compact
+                onChange={value => onSettingChange(setting.scope, setting.key, value)} />}
+            </div>
+          )
+        })}
+        {shortcutError && !pickerOpen && <p className="shortcut-error" role="status">{shortcutError}</p>}
+      </section>
       <button onClick={onSettings} className="nav-item"
         style={{
           display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px',
@@ -55,6 +94,8 @@ export default function Sidebar({ page, setPage, status, onSettings }) {
         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, boxShadow: dotGlow }} />
         {ready ? 'ready' : 'setup'}
       </div>
-    </div>
+      {pickerOpen && <ShortcutPicker selectedIds={shortcutIds} error={shortcutError} onChange={onShortcutsChange}
+        onClose={() => setPickerOpen(false)} />}
+    </aside>
   )
 }

@@ -131,7 +131,6 @@
       manualMap     = localData.manualMap     === true;
       manualOffsetX = localData.manualOffsetX ?? 0;
       manualOffsetY = localData.manualOffsetY ?? 0;
-      _connectEngineWs(); // always connect for engine eval
       if (overlayMode) {
         if (evalBar) evalBar.style.display = 'none';
         clearArrow();
@@ -354,28 +353,31 @@
   }
 
   // Extract FEN from lichess board (DOM-based, reliable for live + analysis)
-  function extractFEN(board) {
+  function extractFEN(board, liveFen = null) {
+    const placement = liveFen?.split(' ')[0];
+    const matchesBoard = fen => typeof fen === 'string' && fen.split('/').length >= 7 &&
+      (!placement || fen.split(' ')[0] === placement);
     // Method 1: Try window.lichess analysis node (analysis pages, includes full FEN with turn)
     try {
       const fen = window.lichess?.analysis?.node?.fen;
-      if (fen && fen.split('/').length >= 7) return fen;
+      if (matchesBoard(fen)) return fen;
     } catch(e) {}
 
     // Method 2: Try window.lichess round data
     try {
       const fen = window.lichess?.round?.data?.game?.fen;
-      if (fen && fen.split('/').length >= 7) return fen;
+      if (matchesBoard(fen)) return fen;
     } catch(e) {}
 
     // Method 3: data-fen attribute anywhere on page
     const fenEl = document.querySelector('[data-fen]');
     if (fenEl) {
       const fen = fenEl.getAttribute('data-fen');
-      if (fen && fen.split('/').length >= 7) return fen;
+      if (matchesBoard(fen)) return fen;
     }
 
     // Method 4: Parse pieces from chessground DOM (primary reliable fallback)
-    return parsePiecesFromDOM(board);
+    return liveFen ?? parsePiecesFromDOM(board);
   }
 
   // Determine castling rights from piece positions
@@ -515,7 +517,7 @@
   }
 
   // Detect player's color from cg-wrap orientation class
-  function detectPlayerColor() {
+  function detectPlayerColor(board = findBoard()) {
     if (manualPlayerColor === 'w') return 'w';
     if (manualPlayerColor === 'b') return 'b';
 
@@ -524,9 +526,8 @@
 
     // Spectating (TV, home, or someone else's game): no player color,
     // so eval and arrows are shown for whichever side is to move.
-    if (!isInOwnGame()) return null;
+    if (!isInOwnGame(board)) return null;
 
-    const board = findBoard();
     if (board?.classList.contains('orientation-black')) return 'b';
     if (board?.classList.contains('orientation-white')) return 'w';
 
@@ -748,6 +749,7 @@
     let checkInterval = null;
 
     function checkResult() {
+      if (!isEnabled) return;
       if (gameOverHandled) { clearInterval(checkInterval); return; }
 
       // Lichess game result element
@@ -799,16 +801,18 @@
     return window.location.pathname.match(/^\/(?:game\/)?([a-zA-Z0-9]{8})(?:[a-zA-Z0-9]{4}|\/(?:white|black))?\/?$/)?.[1] || null;
   }
 
+  function roundForBoard(board) {
+    const round = document.querySelector('.round__app, main.round, .round');
+    return board && round?.contains(board) ? round : null;
+  }
+
   // True only when the user is playing their own game (not spectating home/TV)
   function isInOwnGame(board = findBoard()) {
     if (!getGameId()) return false;
 
-    const round = document.querySelector('.round__app, main.round, .round');
-    if (!round || !board || !round.contains(board)) return false;
-
     // Player controls exist before the clocks start. Spectators can see the
     // same URL and clocks, and choosing a color does not make them a player.
-    return !!round.querySelector('.rcontrols .ricons, .rcontrols .resign, .rcontrols .draw');
+    return !!roundForBoard(board)?.querySelector('.rcontrols .ricons, .rcontrols .resign, .rcontrols .draw');
   }
 
   // ============================================================
@@ -880,7 +884,7 @@
     if (!gameId) return;
     const key = `accuracy_${gameId}`;
     const result = await chrome.storage.local.get(key).catch(() => ({}));
-    if (result[key]) {
+    if (result[key] && getGameId() === gameId && !moveAccuracies.length) {
       moveAccuracies = result[key].accuracies || [];
       prevCpWhite = result[key].prevCpWhite ?? null;
       if (moveAccuracies.length > 0) updateAccuracyDisplay(moveAccuracies[moveAccuracies.length - 1]);
@@ -907,6 +911,7 @@
     evalBar.style.position = 'absolute';
     evalBar.style.left = '-32px';
     evalBar.style.top = '0';
+    if (!isEnabled) evalBar.style.display = 'none';
 
     evalBarFill = document.createElement('div');
     evalBarFill.className = 'chess-live-eval-bar-fill';
@@ -984,7 +989,6 @@
     log('Chessist auto-move:', stage, data);
   }
   let _overlayReconnectTimer = null;
-  let _launchTriggered = false;
 
   // ── Move prediction cache ─────────────────────────────────────────────────
   let _pvQuickCache = null; // instant pv-derived prediction: { fenKey, bestMove, cp, mate, pv, depth, turn }
@@ -1053,7 +1057,6 @@
   let _boardObserver = null;
   let _observedBoard = null;
   let _overlayShown = false; // tracks overlay visibility so we hide it exactly once when the board disappears
-  let _lastEvaluation = null;
 
   // A WebSocket-shaped object that tunnels frames through the service worker,
   // which owns the only real socket to the desktop app. Content scripts can't
@@ -1086,7 +1089,6 @@
       _overlayWs.onopen  = () => {
         try { _overlayWs.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Lichess' })); } catch (e) {}
         reportAutoMove('connected', { ownGame: isInOwnGame(), position: _fenKey(currentFen) });
-        _launchTriggered = false;
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
         // Board may not be in DOM yet on page load — poll until ready
@@ -1096,7 +1098,6 @@
             if (findBoard()) { sendPositionUpdate(); clearInterval(_initPoll); }
           }, 200);
         }
-        if (_lastEvaluation) updateEval(_lastEvaluation);
         if (currentFen) requestEval(currentFen); // always request fresh after (re)connect
         // Sync current settings to engine on connect
         chrome.storage.sync.get(['skillLevel', 'showAltArrows']).then(s => {
@@ -1231,6 +1232,7 @@
       if (overlayMode && _overlayWs?.readyState === WebSocket.OPEN)
         try { _overlayWs.send(JSON.stringify({ positionOnly: true, visible: false })); } catch (e) {}
     } else {
+      checkForPositionChange(false);
       if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN) {
         sendPositionUpdate();
         if (currentFen) setTimeout(() => requestEval(currentFen), 20);
@@ -1401,7 +1403,7 @@
 
     const gameId = getGameId();
     const positionKey = _fenKey(currentFen);
-    if (!gameId || !positionKey || _fenKey(evaluation.fen) !== positionKey ||
+    if (!gameId || gameId !== lastGameId || !positionKey || _fenKey(evaluation.fen) !== positionKey ||
         `${gameId} ${positionKey}` === lastAutoMovePosition) return;
 
     pendingAutoMove = { gameId, positionKey, evaluation };
@@ -1581,8 +1583,9 @@
     }
   }
 
-  async function requestEval(fen, isMouseRelease = false) {
-    if (!isEnabled || !fen) return;
+  async function requestEval(fen, isMouseRelease = false, force = false) {
+    const gameId = getGameId();
+    if (!isEnabled || !fen || gameId !== lastGameId || _fenKey(fen) !== _fenKey(currentFen)) return;
     // A hidden Lichess tab must never interrupt Stockfish analysis requested by
     // the visible game tab (the desktop app owns one shared engine process).
     if (document.hidden) return;
@@ -1622,12 +1625,12 @@
           });
         }
         _overlayWs.send(JSON.stringify({
-          type: 'evaluate', fen, depth: targetDepth, multiPv: analysisMultiPv(),
+          type: 'evaluate', fen, depth: targetDepth, multiPv: analysisMultiPv(), ...(force ? { force } : {}),
         }));
         clearTimeout(evalWatchdogTimer);
         evalWatchdogKey = key;
         evalWatchdogTimer = setTimeout(() => {
-          if (document.hidden || !currentFen || _fenKey(currentFen) !== key) return;
+          if (document.hidden || getGameId() !== gameId || _fenKey(currentFen) !== key) return;
           if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) {
             _connectEngineWs();
             return;
@@ -1645,12 +1648,8 @@
       } catch (e) {}
     }
 
-    // Engine not connected — trigger launch and show status
-    if (!_launchTriggered) {
-      _launchTriggered = true;
-      chrome.runtime.sendMessage({ type: 'LAUNCH_ENGINE' }).catch(() => {});
-      setTimeout(() => { _launchTriggered = false; }, 5000);
-    }
+    // The open handler requests the latest board once the desktop connects.
+    _connectEngineWs();
     showEngineStartingMessage();
   }
 
@@ -1774,39 +1773,7 @@
     observedRoundBoard = board;
     boardObserver?.disconnect();
 
-    const rawFen = extractFEN(board);
-    const fen = rawFen?.startsWith(STARTING_PLACEMENT) ? STARTING_FEN : rawFen;
-    if (fen && fen !== currentFen) {
-      const previousFen = currentFen;
-      currentFen = fen;
-      // LICHESS: detect flip from orientation-black class
-      playerColor = isInOwnGame()
-        ? (manualPlayerColor === 'w' || manualPlayerColor === 'b'
-            ? manualPlayerColor
-            : (isFlippedBoard(board) ? 'b' : 'w'))
-        : null;
-
-      const fenParts = fen.split(' ');
-      if (fenParts.length > 1) currentTurn = fenParts[1];
-
-      const isNewGameLoad = previousFen !== null;
-      if (isNewGameLoad) {
-        clearPendingAutoMove();
-        prevCpWhite = null;
-        moveAccuracies = [];
-        accuracyEvalPending = false;
-        if (accuracyEl) { accuracyEl.style.display = 'none'; accuracyEl.innerHTML = ''; }
-        clearMoveIcon();
-        if (extensionContextValid && checkExtensionContext()) {
-          chrome.runtime.sendMessage({ type: 'RESET_ENGINE' }).catch(() => {});
-        }
-        evalBar?.classList.add('loading');
-        setTimeout(() => requestEval(fen), 120);
-      } else {
-        evalBar?.classList.add('loading');
-        requestEval(fen);
-      }
-    }
+    checkForPositionChange(false);
 
     // Observe cg-board for piece changes (transforms update on moves)
     const cgBoard = getBoardSurface(board);
@@ -1869,41 +1836,52 @@
       const cgBoard = getBoardSurface(board);
       if (hasActivePremove(cgBoard)) { log('Chessist: Premove detected, skipping eval'); return; }
 
-      let newFen = extractFEN(board);
-      const samePlacement = !!(currentFen && newFen &&
-        currentFen.split(' ')[0] === newFen.split(' ')[0]);
+      const gameId = getGameId();
+      const roundChanged = gameId !== lastGameId;
+      // A page-wide FEN can belong to a different board during navigation.
+      const round = gameId && roundForBoard(board);
+      const liveFen = round ? parsePiecesFromDOM(board) : null;
+      if (round && !liveFen) return;
+      let newFen = extractFEN(board, liveFen);
+      if (!newFen) return;
+
+      const samePlacement = currentFen && currentFen.split(' ')[0] === newFen.split(' ')[0];
       // A legal chess move always changes piece placement. Late clock/highlight
       // mutations must not overwrite the turn we already inferred from the move.
-      if (samePlacement) {
+      if (samePlacement && !roundChanged) {
+        playerColor ??= detectPlayerColor(board);
         tryPendingAutoMove();
         return;
       }
 
-      const deltaTurn = inferTurnFromBoardDelta(currentFen, newFen);
-      if (newFen && deltaTurn) {
+      const deltaTurn = roundChanged ? null : inferTurnFromBoardDelta(currentFen, newFen);
+      if (deltaTurn) {
         const parts = newFen.split(' ');
         parts[1] = deltaTurn;
         newFen = parts.join(' ');
       }
-      if (newFen && newFen !== currentFen) {
+      if (newFen !== currentFen || roundChanged) {
         clearPendingAutoMove();
         clearArrow();
 
         const isStartingPosition = newFen.startsWith(STARTING_PLACEMENT);
-        const wasStartingPosition = currentFen?.startsWith(STARTING_PLACEMENT);
+        const previousGameId = lastGameId;
+        const isNewGame = roundChanged && Boolean(previousGameId) && Boolean(gameId);
+        lastGameId = gameId;
 
-        let isNewGame = isStartingPosition && !wasStartingPosition && currentFen !== null;
-
-        const currentGameId = getGameId();
-        if (currentGameId && lastGameId && currentGameId !== lastGameId) isNewGame = true;
-        lastGameId = currentGameId;
+        if (roundChanged) {
+          _pvQuickCache = null;
+          _preWarmCache = null;
+          clearTimeout(evalWatchdogTimer);
+          evalWatchdogTimer = null;
+          evalWatchdogKey = null;
+        }
 
         if (isNewGame) {
-          log('Chessist: New game detected, resetting engine');
+          log('Chessist: New game detected');
           currentBestMove = null;
 
-          const oldGameId = getGameId();
-          if (oldGameId) chrome.storage.local.remove(`accuracy_${oldGameId}`).catch(() => {});
+          chrome.storage.local.remove(`accuracy_${previousGameId}`).catch(() => {});
           prevCpWhite = null;
           moveAccuracies = [];
           accuracyEvalPending = false;
@@ -1912,6 +1890,7 @@
 
           gameOverHandled = false;
           chrome.storage.local.get(['shouldThrowNextGame', 'shouldWinNextGame']).then(local => {
+            if (getGameId() !== gameId) return;
             shouldThrowThisGame = wlBalance && local.shouldThrowNextGame === true;
             shouldWinThisGame   = wlBalance && local.shouldWinNextGame  === true;
             chrome.storage.local.set({ shouldThrowNextGame: false, shouldWinNextGame: false });
@@ -1934,21 +1913,6 @@
           if (depthEl) depthEl.textContent = '';
           if (bestMoveEl) { bestMoveEl.style.display = 'none'; bestMoveEl.textContent = ''; }
 
-          if (extensionContextValid && checkExtensionContext()) {
-            chrome.runtime.sendMessage({ type: 'RESET_ENGINE' }).catch((e) => {
-              if (e.message?.includes('Extension context invalidated')) {
-                extensionContextValid = false; showRefreshMessage();
-              }
-            });
-          }
-
-          // LICHESS: detect player color from board orientation
-          playerColor = isInOwnGame()
-            ? (manualPlayerColor === 'w' || manualPlayerColor === 'b'
-                ? manualPlayerColor
-                : (isFlippedBoard(board) ? 'b' : 'w'))
-            : null;
-          log('Chessist: New game - player color from orientation:', playerColor);
         }
 
         const fenForEval = isStartingPosition ? STARTING_FEN : newFen;
@@ -1957,17 +1921,9 @@
         const fenParts = fenForEval.split(' ');
         if (fenParts.length > 1) currentTurn = fenParts[1];
 
-        // Never clobber a known color with null — detectPlayerColor() can fail mid-game,
-        // and a null playerColor stops auto-move (the "plays once then freezes" bug).
-        if (!isNewGame) {
-          const detected = detectPlayerColor();
-          if (detected) {
-            playerColor = detected;
-          } else if (!playerColor) {
-            const cg = document.querySelector('cg-wrap') || document.querySelector('.cg-wrap');
-            playerColor = (cg && cg.classList.contains('orientation-black')) ? 'b' : 'w';
-          }
-        }
+        // Controls and orientation can arrive after the board. Only retain a
+        // known color when it belongs to the same round.
+        playerColor = detectPlayerColor(board) ?? (roundChanged ? null : playerColor);
         log('Chessist: Turn:', currentTurn, 'Player:', playerColor || 'spectating');
 
         if (turnIndicatorEl) {
@@ -1983,9 +1939,7 @@
         if (isMyTurn) {
           accuracyEvalPending = false;
           clearMoveIcon();
-          const evalDelay = isNewGame ? (instantMove ? 20 : 120) : 0;
           evalBar?.classList.add('loading');
-          setTimeout(() => requestEval(fenForEval, isMouseRelease), evalDelay);
         } else {
           evalBar?.classList.add('loading');
           if (prevCpWhite !== null) {
@@ -2028,8 +1982,10 @@
             }
             log('Chessist: Opponent turn - accuracy pending, to square:', lastMoveToSquare);
           }
-          requestEval(fenForEval, isMouseRelease);
         }
+        // An existing search for an identical board may have already emitted
+        // its opening evaluation before this round was active.
+        requestEval(fenForEval, isMouseRelease, Boolean(roundChanged && samePlacement));
       }
     }, _debounceMs);
   }
@@ -2052,7 +2008,7 @@
 
   let autoRematchPending = false;
   function checkAutoRematch() {
-    if (autoRematchPending) return;
+    if (!isEnabled || autoRematchPending) return;
 
     // Lichess rematch/new game buttons
     const rematchBtn = document.querySelector('.rematch-buttons a.button, .rematch-buttons .button, a.rematch, button.rematch');
@@ -2068,6 +2024,8 @@
       log('Chessist: Game over detected, clicking', btnName, 'in', delay, 'ms');
 
       setTimeout(() => {
+        autoRematchPending = false;
+        if (!isEnabled) return;
         // Re-verify the button still exists
         const rematch2 = document.querySelector('.rematch-buttons a.button, .rematch-buttons .button, a.rematch, button.rematch');
         const newGame2 = document.querySelector('.new-opponent, a.new-opponent, .play-again');
@@ -2080,7 +2038,6 @@
           setTimeout(() => checkForPositionChange(false), 1000);
           setTimeout(() => checkForPositionChange(false), 2000);
         }
-        autoRematchPending = false;
       }, delay);
     }
   }
@@ -2091,18 +2048,8 @@
 
   async function init() {
     await loadSettings();
-    if (!isEnabled) return;
-
-    await restoreAccuracyState();
-
-    if (extensionContextValid && checkExtensionContext()) {
-      try {
-        await chrome.runtime.sendMessage({ type: 'RESET_ENGINE' });
-        log('Chessist: Engine reset on page load');
-      } catch (e) {
-        if (e.message?.includes('Extension context invalidated')) extensionContextValid = false;
-      }
-    }
+    _connectEngineWs();
+    restoreAccuracyState().catch(() => {});
 
     const checkForBoard = () => {
       const board = findBoard();
@@ -2156,6 +2103,8 @@
   // Mirrors the SETTINGS_UPDATED runtime re-apply logic and the enable toggle.
   function applyPushedSettings(data) {
     if (!data) return;
+    const wasEnabled = isEnabled;
+    const hadAutoMove = autoMove;
     if (data.enabled !== undefined) {
       isEnabled = data.enabled;
       if (!isEnabled) clearPendingAutoMove();
@@ -2199,7 +2148,6 @@
     }
     if (data.depth !== undefined) {
       targetDepth = data.depth;
-      if (currentFen && isEnabled) { evalBar?.classList.add('loading'); requestEval(currentFen); }
     }
     if (data.renderMode !== undefined) {
       const mode = data.renderMode; // 'overlay' | 'browser' | 'electron'
@@ -2235,6 +2183,10 @@
     if (data.throwRandom !== undefined) throwRandom = data.throwRandom;
     if (data.lossRandom !== undefined) lossRandom = data.lossRandom;
     if (data.targetAccuracy !== undefined) targetAccuracy = data.targetAccuracy;
+    if (currentFen && isEnabled && (data.depth !== undefined || !wasEnabled || (!hadAutoMove && autoMove))) {
+      evalBar?.classList.add('loading');
+      requestEval(currentFen);
+    }
   }
 
   try {
@@ -2242,6 +2194,7 @@
       if (!extensionContextValid) return;
       try {
         if (message.type === 'TOGGLE_ENABLED') {
+          const wasEnabled = isEnabled;
           isEnabled = message.enabled;
           if (!isEnabled) clearPendingAutoMove();
           if (overlayMode) {
@@ -2254,7 +2207,9 @@
           } else {
             if (evalBar) evalBar.style.display = isEnabled ? 'block' : 'none';
           }
+          if (!wasEnabled && isEnabled) requestEval(currentFen);
         } else if (message.type === 'SETTINGS_UPDATED') {
+          const hadAutoMove = autoMove;
           if (message.showBestMove !== undefined) {
             showBestMove = message.showBestMove;
             if (bestMoveEl) bestMoveEl.style.display = showBestMove ? 'block' : 'none';
@@ -2273,7 +2228,6 @@
           if (message.playerColor !== undefined) { manualPlayerColor = normalizePlayerColor(message.playerColor); playerColor = detectPlayerColor(); }
           if (message.engineDepth !== undefined) {
             targetDepth = message.engineDepth;
-            if (currentFen && isEnabled) { evalBar?.classList.add('loading'); requestEval(currentFen); }
           }
           if (message.stealthMode !== undefined) stealthMode = message.stealthMode;
           if (message.instantMove !== undefined) instantMove = message.instantMove;
@@ -2312,6 +2266,10 @@
                 createArrowOverlay(board);
               }
             }
+          }
+          if (currentFen && isEnabled && (message.engineDepth !== undefined || (!hadAutoMove && autoMove))) {
+            evalBar?.classList.add('loading');
+            requestEval(currentFen);
           }
         } else if (message.type === 'RE_EVALUATE') {
           if (currentFen && isEnabled) { evalBar?.classList.add('loading'); requestEval(currentFen); }

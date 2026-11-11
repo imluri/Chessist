@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.0] — 2026-11-12
+
+- Use **+ Add shortcuts** in the sidebar to pin Game and Engine settings. Pinned controls stay in sync with Settings and are saved between launches.
+- Start analysis for new Lichess rounds as soon as the opening board is ready, even when the previous round showed the same position.
+- Show a Fair Play notice on Chess.com online play pages when Auto-move is enabled.
+
 ## [2.0.9] — 2026-11-12
 
 - Fix Lichess stalls after reconnecting or when an engine result arrives before the live board and turn are ready.

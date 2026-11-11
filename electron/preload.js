@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('chessist', {
   setEngineOption: (key, value) => ipcRenderer.invoke('engine:set', { key, value }),
   getGameSettings: () => ipcRenderer.invoke('game:get'),
   setGameOption: (key, value) => ipcRenderer.invoke('game:set', { key, value }),
+  getSidebarShortcuts: () => ipcRenderer.invoke('sidebar:get-shortcuts'),
+  setSidebarShortcuts: (ids) => ipcRenderer.invoke('sidebar:set-shortcuts', ids),
   redownloadStockfish: () => ipcRenderer.invoke('stockfish:redownload'),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   getExtensionPath: () => ipcRenderer.invoke('extension:path'),

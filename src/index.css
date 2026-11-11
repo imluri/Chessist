@@ -36,6 +36,112 @@ button:focus:not(:focus-visible) { outline: none; }
 /* Sidebar nav: give inactive items a clear hover surface. */
 .nav-item:not(.active):hover { background: rgb(var(--surface)) !important; color: rgb(var(--fg)) !important; }
 
+.sidebar-add-shortcut {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 4px 10px 2px;
+  padding: 6px 8px;
+  text-align: left;
+  background: transparent;
+  border: 1px dashed rgb(var(--border));
+  border-radius: var(--radius-sm);
+  color: rgb(var(--fg-muted));
+  font-size: 12px;
+}
+.sidebar-add-shortcut span { font-size: 17px; line-height: 1; color: rgb(var(--accent)); }
+.sidebar-add-shortcut:not(:disabled):hover { background: rgb(var(--surface)); color: rgb(var(--fg)); }
+.sidebar-add-shortcut:disabled { opacity: 0.55; }
+.sidebar-shortcuts { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 10px 8px; }
+.sidebar-shortcut {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 6px 7px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--radius-sm);
+  background: rgb(var(--surface));
+}
+.sidebar-shortcut-header { display: flex; align-items: center; gap: 5px; min-height: 20px; }
+.sidebar-shortcut-label { flex: 1; min-width: 0; font-size: 12px; line-height: 1.2; overflow-wrap: anywhere; }
+.sidebar-shortcut-value { font-size: 11px; font-variant-numeric: tabular-nums; color: rgb(var(--fg-muted)); }
+.sidebar-shortcut input[type='range'] { margin: 2px 0 4px; }
+.shortcut-remove, .shortcut-picker-close {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: rgb(var(--fg-dim));
+  font-size: 15px;
+  line-height: 1;
+}
+.shortcut-remove:hover, .shortcut-picker-close:hover { background: rgb(var(--border)); color: rgb(var(--fg)); }
+.shortcut-error { color: rgb(var(--status-red)); font-size: 12px; }
+
+.shortcut-picker {
+  width: min(410px, calc(100vw - 48px));
+  max-height: min(480px, calc(100vh - 48px));
+  margin: auto;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--radius);
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  box-shadow: 0 12px 48px #0008;
+}
+.shortcut-picker[open] { display: flex; flex-direction: column; }
+.shortcut-picker::backdrop { background: #0009; }
+.shortcut-picker-header, .shortcut-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+.shortcut-picker-header h2 { font-size: 15px; font-weight: 650; }
+.shortcut-picker-close { width: 28px; height: 28px; font-size: 19px; }
+.shortcut-picker input[type='search'] {
+  flex-shrink: 0;
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--radius-sm);
+  background: rgb(var(--surface));
+  color: rgb(var(--fg));
+  font-size: 13px;
+}
+.shortcut-picker-results { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 12px; }
+.shortcut-picker-results h3 { padding: 12px 8px 5px; color: rgb(var(--fg-muted)); font-size: 11px; font-weight: 650; }
+.shortcut-picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+}
+.shortcut-picker-option:hover { background: rgb(var(--surface)); }
+.shortcut-picker-option input { width: 15px; height: 15px; accent-color: rgb(var(--accent)); cursor: pointer; }
+.shortcut-picker-empty { padding: 10px 8px; color: rgb(var(--fg-muted)); font-size: 13px; }
+.shortcut-picker-footer { border-top: 1px solid rgb(var(--border)); }
+.shortcut-picker-footer button {
+  margin-left: auto;
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgb(var(--accent));
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 /* Settings section card + inset row dividers (last row borderless). */
 .scard {
   border: 1px solid rgb(var(--border));
@@ -69,6 +175,7 @@ input.cslider {
   cursor: pointer;
 }
 input.cslider:disabled { cursor: default; }
+input.cslider:focus-visible { outline: 2px solid rgb(var(--accent)); }
 /* No visible thumb — the accent-filled track shows the value. The thumb is kept
    invisible but sized so it stays grabbable/draggable. */
 input.cslider::-webkit-slider-thumb {

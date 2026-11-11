@@ -19,7 +19,7 @@ let bridge = null
 let stockfishTask = null
 let updateInProgress = false
 
-// ── Settings persistence (userData/chessist-settings.json = { engine, game }) ──
+// ── Settings persistence (userData/chessist-settings.json) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
 const gameSettings = {
   enabled: true,
@@ -48,7 +48,17 @@ const gameSettings = {
 }
 
 // App-level preferences (update channel, etc.).
-const appPrefs = { betaUpdates: false }
+const appPrefs = { betaUpdates: false, sidebarShortcuts: [] }
+
+function normalizeSidebarShortcuts(ids) {
+  if (!Array.isArray(ids)) return []
+  const settings = { game: gameSettings, engine: engine?.getSettings() ?? {} }
+  return [...new Set(ids.filter(id => {
+    if (typeof id !== 'string') return false
+    const [scope, key, extra] = id.split('.')
+    return extra === undefined && Object.hasOwn(settings, scope) && Object.hasOwn(settings[scope], key)
+  }))]
+}
 
 function settingsPath() { return path.join(app.getPath('userData'), 'chessist-settings.json') }
 function loadAll() {
@@ -57,7 +67,8 @@ function loadAll() {
 function saveAll() {
   try {
     fs.writeFileSync(settingsPath(), JSON.stringify({ engine: engine?.getSettings() ?? {}, game: gameSettings, app: appPrefs }, null, 2))
-  } catch {}
+    return true
+  } catch { return false }
 }
 
 const componentStatus = {
@@ -120,6 +131,7 @@ function startSubsystems() {
   Object.assign(engine.settings, saved.engine || {})
   Object.assign(gameSettings, saved.game || {})
   Object.assign(appPrefs, saved.app || {})
+  appPrefs.sidebarShortcuts = normalizeSidebarShortcuts(appPrefs.sidebarShortcuts)
   bridge = new Bridge(engine, overlay, (c) => pushStatus(c))
   bridge.getGameSettings = () => gameSettings
   bridge.getStockfishState = () => componentStatus.stockfishState
@@ -174,6 +186,14 @@ function registerIpc() {
     saveAll()
     bridge?.broadcastSettings(gameSettings)
     return gameSettings
+  })
+  ipcMain.handle('sidebar:get-shortcuts', () => appPrefs.sidebarShortcuts)
+  ipcMain.handle('sidebar:set-shortcuts', (_e, ids) => {
+    const previous = appPrefs.sidebarShortcuts
+    appPrefs.sidebarShortcuts = normalizeSidebarShortcuts(ids)
+    if (saveAll()) return appPrefs.sidebarShortcuts
+    appPrefs.sidebarShortcuts = previous
+    throw new Error('Could not save shortcuts.')
   })
   ipcMain.handle('stockfish:redownload', () => prepareStockfish(true))
   ipcMain.handle('update:get-beta', () => appPrefs.betaUpdates)

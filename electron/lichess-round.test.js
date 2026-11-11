@@ -12,6 +12,7 @@ const fixtureScript = source.replace(/\}\)\(\);\s*$/, `
   function prepareAutoMove(fen) {
     currentFen = fen;
     currentTurn = fen.split(' ')[1];
+    lastGameId = getGameId();
     playerColor = detectPlayerColor();
     autoMove = true;
     instantMove = true;
@@ -20,7 +21,7 @@ const fixtureScript = source.replace(/\}\)\(\);\s*$/, `
   }
 
   globalThis.roundHelpers = {
-    getGameId, isInOwnGame, applyPushedSettings, prepareAutoMove, checkForPositionChange,
+    getGameId, isInOwnGame, applyPushedSettings, prepareAutoMove, checkForPositionChange, observeBoard,
     startCountdown, executeScheduledMove: _executeMoveVerified,
     connectEngine: _connectEngineWs,
     evaluateMove(fen, bestMove, fromCache) {
@@ -69,22 +70,22 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
   let intervalId = 0
   let now = 0
   const state = {
-    pathname, fen: openingFen, boardPresent: true, relayResponse: { success: true },
+    pathname, color, fen: openingFen, boardPresent: true, relayResponse: { success: true },
     lastMove: [], hiddenLastMove: new Set(), moveTexts: [], hiddenSelectors: new Set(),
   }
   const match = (selector, predicate) => selector.split(',').some(part => predicate(part.trim()))
   const querySelector = selector => match(selector, part => selectors.has(part)) ? {} : null
-  const board = {
-    classList: { contains: name => name === `orientation-${color}` },
+  const makeBoard = () => ({
+    classList: { contains: name => name === `orientation-${state.color}` },
     querySelector: selector => {
       if (selector === 'square.last-move' && state.lastMove.length) return {}
       return querySelector(selector)
     },
     querySelectorAll: selector => {
-      if (selector === 'piece' && state.fen) return boardPieces(state.fen, color)
+      if (selector === 'piece' && state.fen) return boardPieces(state.fen, state.color)
       if (selector === 'square.last-move') {
         return state.lastMove.map(square => ({ style: {
-          ...squareStyle(square.charCodeAt(0) - 97, 8 - Number(square[1]), color),
+          ...squareStyle(square.charCodeAt(0) - 97, 8 - Number(square[1]), state.color),
           display: state.hiddenLastMove.has(square) ? 'none' : '',
         } }))
       }
@@ -93,8 +94,10 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       }))
     },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 800 }),
+    addEventListener: ignore,
     dispatchEvent: event => localEvents.push(event),
-  }
+  })
+  let board = makeBoard()
   const round = {
     contains: element => boardInRound && element === board,
     querySelector,
@@ -107,6 +110,7 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       querySelector: selector => {
         if (match(selector, part => part === '.round__app')) return round
         if (match(selector, part => part === 'cg-wrap' || part === '.cg-wrap')) return state.boardPresent ? board : null
+        if (selector === '[data-fen]' && state.pageFen) return { getAttribute: () => state.pageFen }
         return querySelector(selector)
       },
       querySelectorAll: selector => selector === 'i5d z7yx' ? state.moveTexts.map(textContent => ({ textContent })) : [],
@@ -121,14 +125,19 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
         }),
         onMessage: { addListener: ignore },
         sendMessage: async message => {
+          if (message.type !== 'EXECUTE_MOVE') return
           relayMessages.push(message)
           if (state.relayResponse instanceof Error) throw state.relayResponse
           return state.relayResponse
         },
       },
-      storage: { sync: { get: async () => ({ skillLevel: 14 }) } },
+      storage: {
+        sync: { get: async () => ({ skillLevel: 14 }) },
+        local: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+      },
     },
     WebSocket: { OPEN: 1 },
+    MutationObserver: class { observe() {} disconnect() {} },
     matchMedia: () => ({ addEventListener: ignore }),
     Date: { now: () => now },
     setInterval: callback => {
@@ -136,7 +145,7 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       return intervalId
     },
     clearInterval: id => intervals.delete(id),
-    setTimeout: queueMicrotask,
+    setTimeout: (callback, delay = 0) => { if (delay < 100) queueMicrotask(callback) },
     clearTimeout: ignore,
     MouseEvent: class {},
     PointerEvent: class {},
@@ -145,7 +154,7 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
   intervals.clear()
   return {
     ...fixture.roundHelpers,
-    state, selectors, relayMessages, localEvents,
+    state, selectors, relayMessages, localEvents, engineMessages,
     evaluateMove(fen, bestMove, { fromCache = false } = {}) {
       fixture.roundHelpers.evaluateMove(fen, bestMove, fromCache)
       return relayMessages.map(({ from, to }) => from + to)
@@ -154,12 +163,21 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       fixture.roundHelpers.checkForPositionChange()
       await Promise.resolve()
     },
+    async replaceBoard() {
+      board = makeBoard()
+      fixture.roundHelpers.observeBoard(board)
+      await Promise.resolve()
+    },
     async openEngine() {
       fixture.chrome.runtime.id = 'test-extension'
       fixture.roundHelpers.connectEngine()
       onEngineMessage({ kind: 'open' })
       await Promise.resolve()
       return engineMessages
+    },
+    sendEngineEvaluation(fen, bestMove) {
+      const data = { fen, turn: fen.split(' ')[1], depth: 5, bestMove }
+      onEngineMessage({ kind: 'frame', data: JSON.stringify({ type: 'eval', data }) })
     },
     advanceCountdown(ms) {
       now += ms
@@ -393,5 +411,79 @@ describe('Lichess auto-move turn and dispatch safeguards', () => {
     round.selectors.add('.rclock-bottom.running')
     await round.pollPosition()
     expect(round.relayMessages).toEqual([])
+  })
+})
+
+describe('Lichess opening analysis', () => {
+  function evaluationRequests(round) {
+    return round.engineMessages.filter(({ type }) => type === 'evaluate')
+  }
+
+  it('requests and plays the opening once per round when Lichess reuses the same starting board', async () => {
+    const round = loadRound('/game/aB3dEf56', { participant: true })
+    round.applyPushedSettings({ autoMove: true, instantMove: true })
+    await round.openEngine()
+    await round.pollPosition()
+    round.sendEngineEvaluation(openingFen, 'e2e4')
+    await round.pollPosition()
+    expect(evaluationRequests(round)).toEqual([expect.objectContaining({ fen: openingFen })])
+    expect(round.relayMessages).toEqual([expect.objectContaining({ from: 'e2', to: 'e4' })])
+
+    round.state.pathname = '/game/00000000'
+    round.sendEngineEvaluation(openingFen, 'd2d4')
+    expect(round.relayMessages).toHaveLength(1)
+    await round.pollPosition()
+    await round.pollPosition()
+    expect(evaluationRequests(round)).toEqual([
+      expect.objectContaining({ fen: openingFen }),
+      expect.objectContaining({ fen: openingFen, force: true }),
+    ])
+    round.sendEngineEvaluation(openingFen, 'd2d4')
+    expect(round.relayMessages).toEqual([
+      expect.objectContaining({ from: 'e2', to: 'e4' }),
+      expect.objectContaining({ from: 'd2', to: 'd4' }),
+    ])
+  })
+
+  it('waits for the replacement board and detects a new player color as soon as the controls arrive', async () => {
+    const round = loadRound('/game/aB3dEf56', { participant: true, color: 'black' })
+    round.applyPushedSettings({ autoMove: true, instantMove: true })
+    await round.openEngine()
+    await round.pollPosition()
+    round.sendEngineEvaluation(openingFen, 'e2e4')
+    expect(round.relayMessages).toEqual([])
+
+    round.state.pathname = '/game/00000000'
+    round.state.fen = null
+    round.state.color = 'white'
+    round.state.pageFen = blackMovedFen
+    round.selectors.delete('.rcontrols .ricons')
+    await round.replaceBoard()
+    expect(evaluationRequests(round)).toHaveLength(1)
+
+    round.state.fen = openingFen
+    await round.pollPosition()
+    expect(evaluationRequests(round)).toHaveLength(2)
+    expect(evaluationRequests(round).at(-1)).toMatchObject({ fen: openingFen })
+    round.sendEngineEvaluation(openingFen, 'd2d4')
+    expect(round.relayMessages).toEqual([])
+
+    round.selectors.add('.rcontrols .ricons')
+    await round.pollPosition()
+    expect(evaluationRequests(round)).toHaveLength(2)
+    expect(round.relayMessages).toEqual([expect.objectContaining({ from: 'd2', to: 'd4' })])
+  })
+
+  it('requests an existing opening when desktop settings enable analysis and auto-move', async () => {
+    const round = loadRound('/game/aB3dEf56', { participant: true })
+    round.applyPushedSettings({ enabled: false })
+    await round.openEngine()
+    await round.pollPosition()
+    expect(evaluationRequests(round)).toEqual([])
+
+    round.applyPushedSettings({ enabled: true, autoMove: true, instantMove: true })
+    expect(evaluationRequests(round)).toEqual([expect.objectContaining({ fen: openingFen })])
+    round.sendEngineEvaluation(openingFen, 'e2e4')
+    expect(round.relayMessages).toEqual([expect.objectContaining({ from: 'e2', to: 'e4' })])
   })
 })

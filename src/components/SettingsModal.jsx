@@ -34,7 +34,7 @@ function DeveloperPage() {
   )
 }
 
-export default function SettingsModal({ onClose }) {
+export default function SettingsModal({ onClose, gameSettings, engineSettings, onGameChange, onEngineChange }) {
   const [tab, setTab] = useState('game')
 
   useEffect(() => {
@@ -74,8 +74,8 @@ export default function SettingsModal({ onClose }) {
             style={{ marginLeft: 'auto', marginRight: 6, width: 36, height: 36, background: 'transparent', border: 'none', color: 'rgb(var(--fg-muted))', fontSize: 15 }}>✕</button>
         </div>
         <div style={{ overflowY: 'auto' }}>
-          {tab === 'game' && <GamePage />}
-          {tab === 'engine' && <EnginePage />}
+          {tab === 'game' && <GamePage settings={gameSettings} onChange={onGameChange} />}
+          {tab === 'engine' && <EnginePage settings={engineSettings} onChange={onEngineChange} />}
           {tab === 'developer' && <DeveloperPage />}
         </div>
       </div>

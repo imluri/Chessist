@@ -15,7 +15,50 @@ export default function App() {
   const [page, setPage] = useState('evaluation')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [updateStatus, setUpdateStatus] = useState(null)
+  const [settings, setSettings] = useState({ game: null, engine: null })
+  const [shortcutIds, setShortcutIds] = useState(null)
+  const [shortcutError, setShortcutError] = useState('')
   const posRef = useRef(null)
+
+  useEffect(() => {
+    let mounted = true
+    const api = window.chessist
+    const load = (scope, read) => read().then(values => {
+      if (mounted) setSettings(previous => ({ ...previous, [scope]: values }))
+    }).catch(() => {})
+    load('game', api.getGameSettings)
+    load('engine', api.getEngineSettings)
+    api.getSidebarShortcuts().then(ids => {
+      if (mounted) setShortcutIds(ids)
+    }).catch(() => {
+      if (mounted) setShortcutError('Could not load shortcuts.')
+    })
+    return () => { mounted = false }
+  }, [])
+
+  function changeSetting(scope, key, value) {
+    const api = window.chessist
+    const previousValue = settings[scope][key]
+    setSettings(previous => ({ ...previous, [scope]: { ...previous[scope], [key]: value } }))
+    const write = scope === 'game' ? api.setGameOption : api.setEngineOption
+    write(key, value).catch(() => {
+      setSettings(previous => previous[scope][key] !== value ? previous : {
+        ...previous, [scope]: { ...previous[scope], [key]: previousValue },
+      })
+    })
+  }
+
+  function changeShortcuts(ids) {
+    const previousIds = shortcutIds
+    setShortcutError('')
+    setShortcutIds(ids)
+    window.chessist.setSidebarShortcuts(ids).then(saved => {
+      setShortcutIds(current => current === ids ? saved : current)
+    }).catch(() => {
+      setShortcutIds(current => current === ids ? previousIds : current)
+      setShortcutError('Could not save shortcuts.')
+    })
+  }
 
   useEffect(() => {
     window.chessist.getStatus().then(setStatus)
@@ -54,7 +97,9 @@ export default function App() {
         </div>
       )}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <Sidebar page={page} setPage={setPage} status={status} onSettings={() => setSettingsOpen(true)} />
+        <Sidebar page={page} setPage={setPage} status={status} onSettings={() => setSettingsOpen(true)}
+          settings={settings} shortcutIds={shortcutIds} shortcutError={shortcutError}
+          onSettingChange={changeSetting} onShortcutsChange={changeShortcuts} />
         <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {status.message && page !== 'setup' && (
             <div style={{ flexShrink: 0, padding: '6px 16px', fontSize: 11, color: 'rgb(var(--fg-muted))', fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid rgb(var(--border))' }}>
@@ -70,7 +115,10 @@ export default function App() {
           </div>
         </main>
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)}
+        gameSettings={settings.game} engineSettings={settings.engine}
+        onGameChange={(key, value) => changeSetting('game', key, value)}
+        onEngineChange={(key, value) => changeSetting('engine', key, value)} />}
     </div>
   )
 }
