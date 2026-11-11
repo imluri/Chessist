@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import logo from '../assets/logo.png'
 import Check from '../components/controls/Check'
 
-const VERSION = '2.0.4'
+const VERSION = '2.0.5'
 // Baked at build time when git is available (see vite.config.js). Empty for source-ZIP builds.
 const BUILD_SHA = (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '')
 const RELEASES_URL = 'https://github.com/imluri/Chessist/releases'

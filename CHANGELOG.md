@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.5] — 2026-11-12
+
+### Fixed
+
+- Improved instant auto-move and Lichess promotion handling.
+- Fixed Firefox extension startup when Chromium's debugger API is unavailable.
+- Stockfish keeps the latest position when requests overlap and resumes it after an engine restart.
+
+Chromium may ask you to approve the new debugger permission when you reload the extension.
+Thanks to [@ibadullaevrahil67-maker](https://github.com/ibadullaevrahil67-maker) for [PR #3](https://github.com/imluri/Chessist/pull/3).
+
 ## [2.0.4] — 2026-11-12
 
 ### Added
