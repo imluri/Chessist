@@ -117,7 +117,7 @@ function debuggerTargets() {
   return new Promise(resolve => chrome.debugger.getTargets(resolve))
 }
 
-chrome.debugger.onDetach.addListener(source => {
+chrome.debugger?.onDetach?.addListener(source => {
   if (source.tabId) debuggerTabs.delete(source.tabId)
 })
 
@@ -187,6 +187,7 @@ async function cdpBoardMove(tabId, from, to, mode, instant = false) {
 }
 
 async function executeCdpMove(tabId, from, to, mode, instant = false) {
+  if (!chrome.debugger?.attach) throw new Error('Browser debugger API unavailable')
   let firstError = null
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
