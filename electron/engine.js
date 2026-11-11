@@ -30,6 +30,9 @@ class Engine {
     this.multipv = 1
     this.curFen = null
     this.pvSlots = {}
+    this._searching = false
+    this._stopping = false
+    this._newGamePending = false
     this._path = null         // stockfish path (for auto-restart)
     this._intentional = false // suppress restart on deliberate kill
     this._restarts = 0        // bounded auto-restart counter
@@ -88,6 +91,9 @@ class Engine {
       clearTimeout(startupTimer)
       if (this.proc !== proc) return
       this.ready = false
+      this._searching = false
+      this._stopping = false
+      this._newGamePending = false
       this.proc = null
       if (this._intentional) return
       this.onStatus?.({ status: 'error', message: startupError || `Stockfish exited${code === null ? '' : ` (code ${code})`}` })
@@ -122,6 +128,7 @@ class Engine {
       return
     }
     if (line.startsWith('info depth')) {
+      if (!this._searching || this._stopping) return
       const ev = parseInfoLine(line)
       if (ev) this._lastInfo = ev   // keep the latest, incl. depth-0 lines (checkmate reports mate 0)
       if (!ev || (ev.depth || 0) < 5) return
@@ -137,6 +144,14 @@ class Engine {
     // Stockfish answers a finished position with no legal move. `score mate 0`
     // (side to move is in check) → checkmate; otherwise → stalemate/draw.
     if (line.startsWith('bestmove')) {
+      if (!this._searching) return
+      this._searching = false
+      if (this._stopping) {
+        this._stopping = false
+        if (this._newGamePending) this._resetGame()
+        else if (this._lastRequest) this._search(this._lastRequest)
+        return
+      }
       const move = line.split(/\s+/)[1]
       if (move === '(none)' || move === '0000') {
         const turn = this.curFen ? (this.curFen.split(' ')[1] || 'w') : 'w'
@@ -152,29 +167,55 @@ class Engine {
     }
   }
 
-  evaluate(fen, depth, multipv) {
-    this._lastRequest = { fen, depth, multipv }
-    if (this.ready) this._search(this._lastRequest)
+  evaluate(fen, depth, multipv, force = false) {
+    if (!fen) return
+    this._lastRequest = {
+      fen,
+      depth: depth || this.depth,
+      multipv: multipv || this.multipv,
+    }
+    if (!this.ready) return
+    if (this._searching) {
+      const request = this._lastRequest
+      const duplicate = fen === this.curFen && request.depth === this.depth && request.multipv === this.multipv
+      if (!duplicate || force) this._stopSearch()
+      return
+    }
+    this._search(this._lastRequest)
   }
 
   _search({ fen, depth, multipv }) {
-    if (depth) this.depth = depth
-    if (multipv && multipv !== this.multipv) { this.multipv = multipv; this._send(`setoption name MultiPV value ${multipv}`) }
+    this.depth = depth
+    if (multipv !== this.multipv) {
+      this.multipv = multipv
+      this._send(`setoption name MultiPV value ${multipv}`)
+    }
     this.curFen = fen
     this.pvSlots = {}
     this._lastInfo = null
-    this._send('stop')
+    this._searching = true
     this._send('position fen ' + fen)
     this._send('go depth ' + this.depth)
   }
 
   newGame() {
-    this.stop()
+    this._lastRequest = null
     if (!this.ready) return
-    this._send('ucinewgame')
-    this._send('isready')
+    if (this._searching) {
+      this._newGamePending = true
+      this._stopSearch()
+      return
+    }
+    this._resetGame()
+  }
+
+  _resetGame() {
+    this._newGamePending = false
+    this.ready = false
     this.curFen = null
     this.pvSlots = {}
+    this._send('ucinewgame')
+    this._send('isready')
   }
 
   setOption(name, value) { this._send(`setoption name ${name} value ${value}`) }
@@ -209,7 +250,13 @@ class Engine {
 
   stop() {
     this._lastRequest = null
-    if (this.ready) this._send('stop')
+    this._stopSearch()
+  }
+
+  _stopSearch() {
+    if (!this._searching || this._stopping) return
+    this._stopping = true
+    this._send('stop')
   }
 
   kill() {

@@ -42,7 +42,7 @@ describe('engine startup', () => {
     engine._handle('readyok')
 
     expect(send.mock.calls.flat()).toEqual([
-      'setoption name MultiPV value 3', 'stop', `position fen ${nextFen}`, 'go depth 20',
+      'setoption name MultiPV value 3', `position fen ${nextFen}`, 'go depth 20',
     ])
   })
 
@@ -64,5 +64,77 @@ describe('engine startup', () => {
       engine.start(require('node:path').join(__dirname, 'engine.js', 'stockfish.exe'))
     })
     expect(errorStatus.message).toMatch(/^Stockfish could not start:/)
+  })
+})
+
+describe('Engine evaluation queue', () => {
+  const first = '8/8/8/8/8/8/8/K6k w - - 0 1'
+  const next = '8/8/8/8/8/8/8/K6k b - - 0 1'
+
+  it('does not restart an identical active search', () => {
+    const engine = new Engine()
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+
+    engine.evaluate(first, 18, 1)
+    engine.evaluate(first, 18, 1)
+
+    expect(send.mock.calls.flat()).toEqual([
+      `position fen ${first}`,
+      'go depth 18',
+    ])
+  })
+
+  it('waits for the old bestmove before starting the newest position', () => {
+    const engine = new Engine()
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+
+    engine.evaluate(first, 18, 1)
+    send.mockClear()
+    engine.evaluate(next, 18, 3)
+    expect(send.mock.calls.flat()).toEqual(['stop'])
+
+    engine._handle('bestmove a1a2')
+    expect(send.mock.calls.flat()).toEqual([
+      'stop', 'setoption name MultiPV value 3', `position fen ${next}`, 'go depth 18',
+    ])
+  })
+
+  it('keeps the latest request when it returns to the position being stopped', () => {
+    const engine = new Engine()
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+
+    engine.evaluate(first, 18, 1)
+    send.mockClear()
+    engine.evaluate(next, 18, 3)
+    engine.evaluate(first, 18, 1)
+    expect(send.mock.calls.flat()).toEqual(['stop'])
+
+    engine._handle('bestmove a1a2')
+    expect(send.mock.calls.flat()).toEqual(['stop', `position fen ${first}`, 'go depth 18'])
+  })
+
+  it('waits for the old search to stop and the new game to be ready', () => {
+    const onEval = vi.fn()
+    const engine = new Engine(onEval)
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+
+    engine.evaluate(first, 18, 1)
+    send.mockClear()
+    engine.newGame()
+    engine.evaluate(next, 18, 3)
+    expect(send.mock.calls.flat()).toEqual(['stop'])
+
+    engine._handle('bestmove (none)')
+    expect(onEval).not.toHaveBeenCalled()
+    expect(send.mock.calls.flat()).toEqual(['stop', 'ucinewgame', 'isready'])
+
+    engine._handle('readyok')
+    expect(send.mock.calls.flat()).toEqual([
+      'stop', 'ucinewgame', 'isready', 'setoption name MultiPV value 3', `position fen ${next}`, 'go depth 18',
+    ])
   })
 })
