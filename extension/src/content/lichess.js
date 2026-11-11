@@ -4,6 +4,10 @@
 (function() {
   'use strict';
 
+  const STARTING_PLACEMENT = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
+  const STARTING_FEN = `${STARTING_PLACEMENT} w KQkq - 0 1`;
+  const PREMOVE_SELECTOR = 'piece.premove, square.premove, square.current-premove';
+
   let evalBar = null;
   let evalBarFill = null;
   let evalScore = null;
@@ -494,21 +498,6 @@
     return null;
   }
 
-  // Handle promotion dialog on lichess
-  function handlePromotion(piece) {
-    const promotionMap = { 'q': 'queen', 'r': 'rook', 'b': 'bishop', 'n': 'knight' };
-    const pieceName = promotionMap[piece?.toLowerCase()] || 'queen';
-
-    // Lichess promotion choice squares
-    const choice = document.querySelector(`.promotion-choice square[choice="${pieceName}"]`) ||
-                   document.querySelector(`.promotion-choice square`);
-    if (choice) { choice.click(); return; }
-
-    // Fallback
-    const el = document.querySelector(`.promotion-piece.${pieceName}, [data-piece="${pieceName}"]`);
-    if (el) el.click();
-  }
-
   // Detect puzzle mode (lichess training)
   function isPuzzleMode() {
     const path = window.location.pathname;
@@ -579,21 +568,37 @@
   function liveMoveCount() {
     const selectors = ['i5d z7yx', 'kwdb', 'move m2', 'l4x m2', '.tview2 move:not(.empty)'];
     for (const selector of selectors) {
-      const count = document.querySelectorAll(selector).length;
-      if (count > 0) return count;
+      const moves = document.querySelectorAll(selector);
+      if (moves.length) {
+        return [...moves].filter(move => {
+          const text = move.textContent.trim();
+          return text && text !== '…' && text !== '...';
+        }).length;
+      }
     }
     return 0;
   }
 
-  // Corroborate the calculated side-to-move with the bottom/top clocks when
-  // they exist. Computer and untimed games may have no running clock, in which
-  // case detectTurn remains authoritative.
-  function domConfirmsPlayerTurn() {
-    const bottomActive = document.querySelector('.rclock-bottom.running, .rclock-bottom.emerg');
-    if (bottomActive) return true;
-    const topActive = document.querySelector('.rclock-top.running, .rclock-top.emerg');
-    if (topActive) return false;
-    return !!(playerColor && currentTurn === playerColor);
+  function roundClockTurns(board) {
+    const [whiteSide, blackSide] = isFlippedBoard(board) ? ['top', 'bottom'] : ['bottom', 'top'];
+    const active = (color, side) => !!document.querySelector(
+      `.rclock-${color}.running, .clock.${color}.running, .rclock-${side}.running, ` +
+      `.rclock-${side}.rclock-turn .rclock-turn__text`
+    );
+    return { white: active('white', whiteSide), black: active('black', blackSide) };
+  }
+
+  function domConfirmsPlayerTurn(board, placement) {
+    if (!board || !playerColor) return false;
+    const { white, black } = roundClockTurns(board);
+    if (white || black) return white !== black && playerColor === (white ? 'w' : 'b');
+
+    // A timed round may leave both clocks stopped until both players have moved.
+    const moveCount = liveMoveCount();
+    if (placement === STARTING_PLACEMENT) {
+      return playerColor === 'w' && moveCount === 0 && !getBoardSurface(board).querySelector('square.last-move');
+    }
+    return playerColor === 'b' && moveCount === 1 && turnFromLastMove(board) === 'b';
   }
 
   // The desktop app publishes and displays its first complete PV at depth 5.
@@ -629,61 +634,38 @@
       }
     } catch(e) {}
 
-    // Check active clock for live games
-    const whiteActive = document.querySelector('.rclock-white.running, .clock.white.running');
-    if (whiteActive) return 'w';
-    const blackActive = document.querySelector('.rclock-black.running, .clock.black.running');
-    if (blackActive) return 'b';
+    const { white, black } = roundClockTurns(board);
+    if (white !== black) return white ? 'w' : 'b';
 
-    // Untimed and computer games use a single rclock-turn element instead of
-    // color clocks. Bottom is the board-orientation color; top is the opposite.
-    const turnClock = document.querySelector('.rclock-turn');
-    if (turnClock) {
-      const bottomColor = isFlippedBoard(board) ? 'b' : 'w';
-      if (turnClock.classList.contains('rclock-bottom')) return bottomColor;
-      if (turnClock.classList.contains('rclock-top')) return bottomColor === 'w' ? 'b' : 'w';
-    }
-
-    // Current Lichess round replay markup (2026): i5d is the move list and
-    // z7yx is one half-move. This is authoritative for untimed AI games where
-    // no running clock is present. One ply means Black to move, two means White.
+    // Fall back to the replay move count when displaying the position.
     const currentRoundMoveCount = liveMoveCount();
     if (currentRoundMoveCount > 0) return currentRoundMoveCount % 2 === 0 ? 'w' : 'b';
 
-    // The highlighted destination square is more reliable than Lichess' move
-    // list markup, which changes between round and computer-game views. The
-    // piece on that square made the previous move, so the other color moves now.
-    if (board) {
-      const cgBoard = getBoardSurface(board);
-      const boardRect = board.getBoundingClientRect();
-      const squareSize = boardRect.width / 8;
-      if (squareSize > 0) {
-        for (const sqEl of cgBoard.querySelectorAll('square.last-move')) {
-          const m = sqEl.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
-          if (!m) continue;
-          const xPx = parseFloat(m[1]), yPx = parseFloat(m[2]);
-          for (const piece of cgBoard.querySelectorAll('piece')) {
-            const pm = piece.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
-            if (!pm) continue;
-            if (Math.abs(parseFloat(pm[1]) - xPx) < squareSize * 0.4 &&
-                Math.abs(parseFloat(pm[2]) - yPx) < squareSize * 0.4) {
-              if (piece.classList.contains('white')) return 'b';
-              if (piece.classList.contains('black')) return 'w';
-            }
-          }
+    return turnFromLastMove(board) || 'w';
+  }
+
+  // The piece on the highlighted destination belongs to the previous mover.
+  function turnFromLastMove(board) {
+    if (!board) return null;
+    const cgBoard = getBoardSurface(board);
+    const squareSize = board.getBoundingClientRect().width / 8;
+    if (squareSize <= 0) return null;
+
+    for (const sqEl of cgBoard.querySelectorAll('square.last-move')) {
+      const m = sqEl.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
+      if (!m) continue;
+      const xPx = parseFloat(m[1]), yPx = parseFloat(m[2]);
+      for (const piece of cgBoard.querySelectorAll('piece')) {
+        const pm = piece.style.transform.match(/translate\((\d+(?:\.\d+)?)px,\s*(\d+(?:\.\d+)?)px\)/);
+        if (!pm) continue;
+        if (Math.abs(parseFloat(pm[1]) - xPx) < squareSize * 0.4 &&
+            Math.abs(parseFloat(pm[2]) - yPx) < squareSize * 0.4) {
+          if (piece.classList.contains('white')) return 'b';
+          if (piece.classList.contains('black')) return 'w';
         }
       }
     }
-
-    // Count moves in analysis move list (each <move> element = 1 ply)
-    const moves = document.querySelectorAll('.tview2 move:not(.empty)');
-    if (moves.length > 0) return moves.length % 2 === 0 ? 'w' : 'b';
-
-    // Count round game moves
-    const roundMoves = document.querySelectorAll('.moves kwdb, l4x kwdb, i5d z7yx');
-    if (roundMoves.length > 0) return roundMoves.length % 2 === 0 ? 'w' : 'b';
-
-    return 'w';
+    return null;
   }
 
   function countConsecutive(history, result) {
@@ -806,11 +788,10 @@
   }
 
   // True only when the user is playing their own game (not spectating home/TV)
-  function isInOwnGame() {
+  function isInOwnGame(board = findBoard()) {
     if (!getGameId()) return false;
 
     const round = document.querySelector('.round__app, main.round, .round');
-    const board = findBoard();
     if (!round || !board || !round.contains(board)) return false;
 
     // Player controls exist before the clocks start. Spectators can see the
@@ -1230,6 +1211,7 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      hideCountdown();
       clearTimeout(evalWatchdogTimer);
       evalWatchdogTimer = null;
       evalWatchdogKey = null;
@@ -1399,19 +1381,15 @@
     }
 
     // Auto-move (only when playing an own game, not spectating home/TV)
-    if (autoMove && evaluation.bestMove && evaluation.depth >= moveReadyDepth()) {
-      const ownGame = isInOwnGame();
+    if (isEnabled && autoMove && !document.hidden && evaluation.bestMove && evaluation.depth >= moveReadyDepth()) {
+      const board = findBoard();
+      const gameId = getGameId();
+      const ownGame = isInOwnGame(board);
       const isPlayerTurn = playerColor && currentTurn === playerColor;
-      const domTurnConfirmed = domConfirmsPlayerTurn();
+      const domTurnConfirmed = ownGame && domConfirmsPlayerTurn(board, currentFen?.split(' ')[0]);
       const moveIsPlayers = !!(playerColor && moveBelongsToColor(evaluation.bestMove, currentFen, playerColor));
-      let evalMatchesCurrent = true;
-      if (evaluation.fen && currentFen) {
-        const evalPosition = evaluation.fen.split(' ').slice(0, 2).join(' ');
-        const currentPosition = currentFen.split(' ').slice(0, 2).join(' ');
-        evalMatchesCurrent = evalPosition === currentPosition;
-      }
-
-      const positionKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
+      const positionKey = _fenKey(currentFen);
+      const evalMatchesCurrent = !!positionKey && _fenKey(evaluation.fen) === positionKey;
 
       reportAutoMove('evaluation', {
         move: evaluation.bestMove,
@@ -1426,7 +1404,8 @@
       });
 
       // fromCache=true means PV-derived prediction (display only) — wait for real engine result
-      if (ownGame && isPlayerTurn && domTurnConfirmed && moveIsPlayers && !autoMoveExecuting && evalMatchesCurrent && positionKey && positionKey !== lastAutoMovePosition && !evaluation.fromCache) {
+      if (ownGame && isPlayerTurn && domTurnConfirmed && moveIsPlayers && !autoMoveExecuting && !countdownInterval &&
+          evalMatchesCurrent && positionKey && `${gameId} ${positionKey}` !== lastAutoMovePosition && !evaluation.fromCache) {
         let moveToPlay = evaluation.bestMove;
         const pv = evaluation.pv || [];
 
@@ -1466,8 +1445,6 @@
           moveToPlay = evaluation.bestMove;
         }
 
-        lastAutoMovePosition = positionKey;
-
         const minDelayMs = autoMoveDelayMin * 1000;
         const maxDelayMs = autoMoveDelayMax * 1000;
         const delayRange = maxDelayMs - minDelayMs;
@@ -1488,11 +1465,11 @@
           log('Chessist: Instant auto-move for', moveToPlay);
           reportAutoMove('trigger', { move: moveToPlay, delayMs: 0, position: positionKey });
           hideCountdown();
-          _executeMoveVerified(moveToPlay, positionKey);
+          _executeMoveVerified(moveToPlay, positionKey, gameId);
         } else {
           log('Chessist: Auto-move triggered for', moveToPlay, 'with delay', finalDelay, 'ms');
           reportAutoMove('trigger', { move: moveToPlay, delayMs: finalDelay, position: positionKey });
-          startCountdown(finalDelay, positionKey, moveToPlay);
+          startCountdown(finalDelay, positionKey, moveToPlay, gameId);
         }
       } else if (!evalMatchesCurrent) {
         log('Chessist: Skipping auto-move - stale evaluation');
@@ -1531,7 +1508,7 @@
     return Math.max(0.0, Math.min(1.0, complexity));
   }
 
-  function startCountdown(delayMs, expectedPosition, moveToPlay) {
+  function startCountdown(delayMs, expectedPosition, moveToPlay, gameId) {
     hideCountdown();
     const endTime = Date.now() + delayMs;
     if (countdownEl) countdownEl.style.display = 'block';
@@ -1540,21 +1517,27 @@
       const remaining = Math.max(0, endTime - Date.now());
       if (countdownEl) countdownEl.textContent = `${(remaining / 1000).toFixed(1)}s`;
 
-      const board = findBoard();
-      const currentFenNow = board ? extractFEN(board) : null;
-      if (currentFenNow) {
-        const nowPlacement = currentFenNow.split(' ')[0];
-        const expectedPlacement = expectedPosition?.split(' ')[0];
-        if (nowPlacement !== expectedPlacement) { log('Chessist: Position changed, cancelling countdown'); hideCountdown(); return; }
+      if (!canExecuteMove(expectedPosition, gameId)) {
+        log('Chessist: Game, board or turn no longer matches the queued move');
+        hideCountdown();
+        return;
       }
 
-      if (remaining <= 0) { hideCountdown(); log('Chessist: Countdown complete, executing move:', moveToPlay); _executeMoveVerified(moveToPlay, expectedPosition); }
+      if (remaining <= 0) {
+        hideCountdown();
+        _executeMoveVerified(moveToPlay, expectedPosition, gameId);
+      }
     }, 100);
   }
 
   function hideCountdown() {
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
     if (countdownEl) { countdownEl.style.display = 'none'; countdownEl.textContent = ''; }
+  }
+
+  function setAutoMove(enabled) {
+    autoMove = enabled;
+    if (!autoMove) hideCountdown();
   }
 
   function showEngineStartingMessage() {
@@ -1704,167 +1687,60 @@
   // MOVE EXECUTION (lichess / chessground)
   // ============================================================
 
-  function fireClickAt(target, x, y) {
-    const opts = (extra) => Object.assign({
-      bubbles: true, cancelable: true, view: window,
-      clientX: x, clientY: y, button: 0, buttons: 1
-    }, extra);
-    target.dispatchEvent(new PointerEvent('pointerdown', opts({ pointerId: 1, pointerType: 'mouse', isPrimary: true })));
-    target.dispatchEvent(new MouseEvent('mousedown', opts({})));
-    target.dispatchEvent(new PointerEvent('pointerup', opts({ pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 })));
-    target.dispatchEvent(new MouseEvent('mouseup', opts({ buttons: 0 })));
-    target.dispatchEvent(new MouseEvent('click', opts({ buttons: 0 })));
-  }
+  function canExecuteMove(expectedPosition, expectedGameId) {
+    if (!isEnabled || !autoMove || document.hidden || !expectedPosition ||
+        !expectedGameId || getGameId() !== expectedGameId) return false;
 
-  function getSquarePixel(surface, square, flipped) {
-    const rect = surface.getBoundingClientRect();
-    const squareSize = rect.width / 8;
-    const { file, rank } = squareToIndices(square);
-    let x, y;
-    if (flipped) {
-      x = rect.left + (7 - file + 0.5) * squareSize;
-      y = rect.top + (rank + 0.5) * squareSize;
-    } else {
-      x = rect.left + (file + 0.5) * squareSize;
-      y = rect.top + (7 - rank + 0.5) * squareSize;
-    }
-    return { x, y };
-  }
-
-  function livePositionKey() {
     const board = findBoard();
-    const fen = board ? extractFEN(board) : null;
-    return fen ? fen.split(' ').slice(0, 2).join(' ') : null;
+    if (!isInOwnGame(board) || getBoardSurface(board).querySelector(PREMOVE_SELECTOR)) return false;
+
+    const [placement, turn] = expectedPosition.split(' ');
+    if (turn !== playerColor || !domConfirmsPlayerTurn(board, placement)) return false;
+
+    // Read the actual board. A cached or page-wide FEN can describe an older position.
+    return parsePiecesFromDOM(board)?.startsWith(`${expectedPosition} `) === true;
   }
 
-  async function _executeMoveVerified(move, positionKeyBefore) {
-    if (autoMoveExecuting) return;
+  async function _executeMoveVerified(move, positionKeyBefore, gameId) {
+    const moveKey = `${gameId} ${positionKeyBefore}`;
+    if (autoMoveExecuting || lastAutoMovePosition === moveKey || !canExecuteMove(positionKeyBefore, gameId)) return;
     autoMoveExecuting = true;
-    const placementBefore = positionKeyBefore?.split(' ')[0] || null;
-    const movesBefore = liveMoveCount();
-    const moveRegistered = () => {
-      const key = livePositionKey();
-      const placement = key?.split(' ')[0] || null;
-      const moveCount = liveMoveCount();
-      return {
-        key,
-        placement,
-        moveCount,
-        changed: !!((placement && placement !== placementBefore) || (movesBefore > 0 && moveCount > movesBefore))
-      };
-    };
-
-    // In instant mode a single native drag is faster and does not depend on the
-    // user's Lichess click-to-move preference. Await the relay before verifying:
-    // the old fixed timer could start the fallback while CDP was still finishing
-    // the primary click sequence, causing the two inputs to cancel each other.
-    const primaryMode = instantMove ? 'drag' : 'click';
-    const fallbackMode = primaryMode === 'drag' ? 'click' : 'drag';
-    const settle = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    lastAutoMovePosition = moveKey;
+    const moveMode = instantMove ? 'drag' : 'click';
 
     try {
-      reportAutoMove(`execute-${primaryMode}-primary`, { move, position: positionKeyBefore, movesBefore });
-      await executeMove(move, primaryMode);
-      await settle(instantMove ? 45 : 120);
-
-      const firstResult = moveRegistered();
-      if (firstResult.changed) {
-        reportAutoMove(`verified-${primaryMode}-primary`, {
-          move, before: positionKeyBefore, after: firstResult.key,
-          movesBefore, movesAfter: firstResult.moveCount
-        });
-        return;
-      }
-
-      log(`Chessist: ${primaryMode} move not registered, retrying with ${fallbackMode}:`, move);
-      reportAutoMove(`execute-${fallbackMode}-fallback`, { move, position: positionKeyBefore, movesBefore });
-      await executeMove(move, fallbackMode);
-      await settle(instantMove ? 70 : 180);
-
-      const retryResult = moveRegistered();
-      if (retryResult.changed) {
-        reportAutoMove(`verified-${fallbackMode}-fallback`, {
-          move, before: positionKeyBefore, after: retryResult.key,
-          movesBefore, movesAfter: retryResult.moveCount
-        });
-        return;
-      }
-
-      if (retryResult.key) {
-        log('Chessist: Primary and fallback inputs both failed, forcing re-eval');
-        reportAutoMove('failed', { move, position: positionKeyBefore });
-        lastAutoMovePosition = null;
-        if (currentFen) requestEval(currentFen);
-      } else {
-        reportAutoMove('failed-no-board', { move, position: positionKeyBefore });
-        lastAutoMovePosition = null;
-      }
+      reportAutoMove(`execute-${moveMode}-primary`, { move, position: positionKeyBefore });
+      // A missing or failed reply can follow partial input. Do not resend it.
+      await executeMove(move, moveMode);
     } catch (error) {
       reportAutoMove('execute-error', { move, error: String(error) });
-      lastAutoMovePosition = null;
-      if (currentFen) requestEval(currentFen);
     } finally {
       autoMoveExecuting = false;
     }
   }
 
-  async function executeMove(move, moveMode = 'drag') {
-    if (!move || move.length < 4) return false;
-    const board = findBoard();
-    if (!board) return false;
-
+  async function executeMove(move, moveMode) {
     const fromSquare = move.substring(0, 2);
     const toSquare = move.substring(2, 4);
     const promotion = move.length > 4 ? move[4] : null;
 
-    log(`Chessist: Auto-moving ${fromSquare} to ${toSquare}${promotion ? ' promoting to ' + promotion : ''} (${moveMode})`);
-
-    // Ask the service worker to inject into MAIN world. This is the reliable
-    // path on Lichess because it follows Chessground's actual mouse event
-    // contract and is not affected by content-script world isolation.
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'EXECUTE_MOVE',
-        from: fromSquare,
-        to: toSquare,
-        promotion,
-        moveMode,
-        instant: instantMove
-      });
-      reportAutoMove('relay-response', {
-        move,
-        moveMode,
-        success: !!response?.success,
-        executor: response?.executor || null,
-        cdpError: response?.cdpError || null,
-        error: response?.error || null
-      });
-      if (!response?.success) throw new Error(response?.error || 'MAIN-world move failed');
-      return true;
-    } catch (error) {
-      reportAutoMove('relay-error', { move, moveMode, error: String(error) });
-      log('Chessist: Move relay unavailable, using local fallback:', error);
-    }
-
-    const surface = getBoardSurface(board);
-    const flipped = isFlippedBoard(board);
-
-    // Lichess CSP blocks inline script injection, so use click-to-move directly.
-    // Chessground supports: click piece to select → click destination to move.
-    const fp = getSquarePixel(surface, fromSquare, flipped);
-    const tp = getSquarePixel(surface, toSquare, flipped);
-
-    const fromEl = document.elementFromPoint(fp.x, fp.y) || surface;
-    fireClickAt(fromEl, fp.x, fp.y);
-
-    await new Promise(resolve => setTimeout(resolve, instantMove ? 20 : 120));
-    {
-      const toEl = document.elementFromPoint(tp.x, tp.y) || surface;
-      fireClickAt(toEl, tp.x, tp.y);
-      if (promotion) setTimeout(() => handlePromotion(promotion), 200);
-    }
-
-    return true;
+    const response = await chrome.runtime.sendMessage({
+      type: 'EXECUTE_MOVE',
+      from: fromSquare,
+      to: toSquare,
+      promotion,
+      moveMode,
+      instant: instantMove,
+      singleAttempt: true
+    });
+    reportAutoMove('relay-response', {
+      move,
+      moveMode,
+      success: !!response?.success,
+      executor: response?.executor || null,
+      cdpError: response?.cdpError || null,
+      error: response?.error || null
+    });
   }
 
   // ============================================================
@@ -1877,13 +1753,10 @@
     const rawFen = extractFEN(board);
     if (rawFen && rawFen !== currentFen) {
       const previousFen = currentFen;
-      const isStartPos = rawFen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR');
-      const fen = isStartPos ? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' : rawFen;
+      const fen = rawFen.startsWith(STARTING_PLACEMENT) ? STARTING_FEN : rawFen;
       if (fen === currentFen) return;
 
       currentFen = fen;
-      lastAutoMovePosition = null;
-
       // LICHESS: detect flip from orientation-black class
       playerColor = isInOwnGame()
         ? (manualPlayerColor === 'w' || manualPlayerColor === 'b'
@@ -1896,8 +1769,6 @@
 
       const isNewGameLoad = previousFen !== null;
       if (isNewGameLoad) {
-        lastAutoMovePosition = null;
-        autoMoveExecuting = false;
         hideCountdown();
         prevCpWhite = null;
         moveAccuracies = [];
@@ -1976,9 +1847,8 @@
       const board = findBoard();
       if (!board) { log('Chessist: No board found'); return; }
 
-      // LICHESS: detect premoves (chessground marks them with class 'premove')
       const cgBoard = getBoardSurface(board);
-      const hasPremove = cgBoard.querySelector('piece.premove, square.premove');
+      const hasPremove = cgBoard.querySelector(PREMOVE_SELECTOR);
       if (hasPremove) { log('Chessist: Premove detected, skipping eval'); return; }
 
       let newFen = extractFEN(board);
@@ -1997,8 +1867,8 @@
       if (newFen && newFen !== currentFen) {
         clearArrow();
 
-        const isStartingPosition = newFen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR');
-        const wasStartingPosition = currentFen?.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR');
+        const isStartingPosition = newFen.startsWith(STARTING_PLACEMENT);
+        const wasStartingPosition = currentFen?.startsWith(STARTING_PLACEMENT);
 
         let isNewGame = isStartingPosition && !wasStartingPosition && currentFen !== null;
 
@@ -2008,8 +1878,6 @@
 
         if (isNewGame) {
           log('Chessist: New game detected, resetting engine');
-          lastAutoMovePosition = null;
-          autoMoveExecuting = false;
           hideCountdown();
           currentBestMove = null;
 
@@ -2062,9 +1930,7 @@
           log('Chessist: New game - player color from orientation:', playerColor);
         }
 
-        const fenForEval = isStartingPosition
-          ? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
-          : newFen;
+        const fenForEval = isStartingPosition ? STARTING_FEN : newFen;
 
         currentFen = fenForEval;
         const fenParts = fenForEval.split(' ');
@@ -2298,11 +2164,7 @@
       showAltArrows = data.showAltArrows;
       clearArrow();
     }
-    if (data.autoMove !== undefined) {
-      autoMove = data.autoMove;
-      autoMoveExecuting = false;
-      if (autoMove) lastAutoMovePosition = null;
-    }
+    if (data.autoMove !== undefined) setAutoMove(data.autoMove);
     if (data.instantMove !== undefined) {
       instantMove = data.instantMove;
     }
@@ -2387,7 +2249,7 @@
             clearArrow(); // redraw will happen on next eval
           }
           if (message.showMoveIcon !== undefined) { showMoveIcon = message.showMoveIcon; if (!showMoveIcon) clearMoveIcon(); }
-          if (message.autoMove !== undefined) { autoMove = message.autoMove; autoMoveExecuting = false; if (autoMove) lastAutoMovePosition = null; }
+          if (message.autoMove !== undefined) setAutoMove(message.autoMove);
           if (message.playerColor !== undefined) { manualPlayerColor = normalizePlayerColor(message.playerColor); playerColor = detectPlayerColor(); }
           if (message.engineDepth !== undefined) {
             targetDepth = message.engineDepth;

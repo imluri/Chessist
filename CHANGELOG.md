@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.8] — 2026-11-12
+
+- Recheck the live Lichess board and turn before sending an automatic move. Drop stale moves and avoid retries when input may already have reached the board.
+- Fix the GitHub Actions Windows release build so packaging finishes before the workflow publishes the installer.
+
 ## [2.0.7] — 2026-11-12
 
 - Recognize current Lichess game URLs and detect the player's own round before the clocks start.

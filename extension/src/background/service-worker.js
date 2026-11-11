@@ -229,18 +229,22 @@ async function cdpBoardMove(tabId, from, to, mode, instant = false) {
   }
 }
 
-async function executeCdpMove(tabId, from, to, mode, instant = false) {
+async function executeCdpMove(tabId, from, to, mode, instant = false, onInputStart) {
   if (!chrome.debugger?.attach) throw new Error('Browser debugger API unavailable')
   let firstError = null
   for (let attempt = 0; attempt < 2; attempt++) {
+    let inputStarted = false
     try {
       await ensureDebugger(tabId)
+      inputStarted = true
+      onInputStart?.()
       await cdpBoardMove(tabId, from, to, mode, instant)
       return
     } catch (error) {
       if (!firstError) firstError = error
       debuggerTabs.delete(tabId)
       try { await debuggerDetach(tabId) } catch (_) {}
+      if (inputStarted && onInputStart) throw error
     }
   }
   throw firstError || new Error('CDP input unavailable')
@@ -411,15 +415,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!coordinates) throw new Error('DOM board coordinates unavailable')
     let executor = 'cdp-dom-input'
     let cdpError = null
+    let inputStarted = false
+    const onInputStart = message.singleAttempt ? () => { inputStarted = true } : undefined
     try {
       await executeCdpMove(
         tabId,
         coordinates.viewportFrom,
         coordinates.viewportTo,
         message.moveMode || 'click',
-        message.instant === true
+        message.instant === true,
+        onInputStart
       )
     } catch (error) {
+      // An input error can occur after a click or drag reached the board.
+      if (inputStarted) throw error
       cdpError = error.message || String(error)
       await domBoardMove(
         tabId,
