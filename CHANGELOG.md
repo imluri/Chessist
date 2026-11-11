@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.6] — 2026-11-12
+
+- The bundled browser extension reloads automatically after future desktop updates when its folder contains the newer version.
+- The score panel and board keep their size while Stockfish evaluates a new position.
+
+After installing v2.0.6, reload the existing browser extension once to enable automatic reloads.
+If it still shows an older version, load the bundled folder from **Setup → Browser extension**.
+Refresh any chess tabs that were already open after the extension reloads.
+
 ## [2.0.5] — 2026-11-12
 
 ### Fixed

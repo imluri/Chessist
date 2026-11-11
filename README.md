@@ -58,6 +58,9 @@ Windows 10/11. The transparent overlay is Windows-only.
 the next stable release and restart Chessist from **Update & restart**. Older installer builds
 need one manual upgrade to get this feature. Git clones can update in place from release tags
 or from `main` with the beta channel. Source ZIP builds link to the release page.
+If your browser loaded the bundled extension folder, the extension reloads itself when a newer
+version arrives in that folder. Reload older extension versions once to enable this behavior.
+After an extension reload, refresh any chess tabs that were already open.
 
 ## Using the app
 

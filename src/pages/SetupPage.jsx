@@ -75,6 +75,7 @@ function ExtensionModule({ status }) {
   const [ffPath, setFfPath] = useState('')
   const [browser, setBrowser] = useState('chromium')   // 'chromium' | 'firefox'
   const [copied, setCopied] = useState('')
+  const [showInstructions, setShowInstructions] = useState(false)
   useEffect(() => {
     window.chessist.getExtensionPath().then(setExtPath)
     window.chessist.getFirefoxPath?.().then(setFfPath)
@@ -82,6 +83,7 @@ function ExtensionModule({ status }) {
 
   const copy = (text, tag) => { window.chessist.copyText(text); setCopied(tag); setTimeout(() => setCopied(''), 1500) }
   const connected = status.extensionConnected
+  const needsUpdate = status.extensionUpdateAvailable
 
   const Step = ({ n, children }) => (
     <div style={{ display: 'flex', gap: 10, padding: '5px 0', fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6 }}>
@@ -103,12 +105,23 @@ function ExtensionModule({ status }) {
   )
 
   return (
-    <ModuleCard title="Browser extension" state={connected ? 'ok' : 'off'} statusLabel={connected ? 'connected' : 'not connected'}>
-      {connected ? (
-        <p style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6 }}>
-          The extension is connected. Open a game on chess.com or lichess.org to start analysis.
-        </p>
-      ) : (
+    <ModuleCard title="Browser extension" state={needsUpdate ? 'working' : connected ? 'ok' : 'off'}
+      statusLabel={needsUpdate ? 'update available' : connected ? 'connected' : 'not connected'}>
+      {connected && (
+        <div style={{ marginBottom: !needsUpdate && !showInstructions ? 0 : 10 }}>
+          <p style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6 }}>
+            {needsUpdate
+              ? 'If Chessist still shows an older version in your browser, reload the extension. If the version stays the same, load the bundled folder below.'
+              : 'The extension is connected. Open or refresh a chess tab on Chess.com or Lichess to start analysis.'}
+          </p>
+          {!needsUpdate && (
+            <button style={{ ...btn, marginTop: 8 }} onClick={() => setShowInstructions(!showInstructions)} aria-expanded={showInstructions}>
+              {showInstructions ? 'Hide setup instructions' : 'Show setup instructions'}
+            </button>
+          )}
+        </div>
+      )}
+      {(!connected || needsUpdate || showInstructions) && (
         <>
           <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             <Tab id="chromium">Chrome / Brave / Edge</Tab>

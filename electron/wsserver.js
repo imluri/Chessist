@@ -2,6 +2,18 @@ const { WebSocketServer } = require('ws')
 const { createServer } = require('http')
 
 const PORT = 27301
+const EXTENSION_VERSION = /^\d{1,5}(?:\.\d{1,5}){0,3}$/
+
+function isOlderExtensionVersion(current, available) {
+  if (typeof current !== 'string' || !EXTENSION_VERSION.test(current)) return false
+  const installed = current.split('.').map(Number)
+  const bundled = available.split('.').map(Number)
+  for (let i = 0; i < 4; i++) {
+    const difference = (bundled[i] ?? 0) - (installed[i] ?? 0)
+    if (difference) return difference > 0
+  }
+  return false
+}
 
 // Routes messages between the browser extension and the engine/overlay.
 // Two kinds of extension clients:
@@ -14,17 +26,19 @@ class Bridge {
     this.onComponent = onComponent
     this.wss = null
     this.contentClients = new Set()   // chess tabs
-    this.presenceClients = new Set()  // service worker(s)
+    this.presenceClients = new Map()  // service worker → whether its version needs attention
     this.chessSite = null             // e.g. 'Chess.com' | 'Lichess'
     this.getGameSettings = null // set by main: () => gameSettings
     this.getStockfishState = null
+    this.getBundledExtensionVersion = null
     this.onPosition = null      // set by main: (msg) => void
   }
 
   _emit() {
     const chessConnected = this.contentClients.size > 0
     const extensionConnected = chessConnected || this.presenceClients.size > 0
-    this.onComponent?.({ extensionConnected, chessConnected, chessSite: chessConnected ? this.chessSite : null })
+    const extensionUpdateAvailable = [...this.presenceClients.values()].some(Boolean)
+    this.onComponent?.({ extensionConnected, extensionUpdateAvailable, chessConnected, chessSite: chessConnected ? this.chessSite : null })
   }
 
   start() {
@@ -85,8 +99,18 @@ class Bridge {
         // Push current game settings to the freshly connected content script.
         const data = this.getGameSettings?.()
         if (data) { try { ws.send(JSON.stringify({ type: 'settings', data })) } catch {} }
+      } else if (msg.role === 'extension') {
+        const browser = msg.browser === 'firefox' ? 'firefox' : 'chromium'
+        const version = this.getBundledExtensionVersion?.(browser)
+        const hasBundle = typeof version === 'string' && EXTENSION_VERSION.test(version)
+        const older = hasBundle && isOlderExtensionVersion(msg.version, version)
+        // Workers shipped before the update protocol never report a version.
+        this.presenceClients.set(ws, hasBundle && (older || msg.version == null))
+        if (older) {
+          try { ws.send(JSON.stringify({ type: 'extension_update', version })) } catch {}
+        }
       } else {
-        this.presenceClients.add(ws) // service worker presence
+        return
       }
       this._emit()
       return

@@ -9,7 +9,7 @@ import AboutPage from './pages/AboutPage'
 const piecesKey = (fen) => (fen ? fen.split(' ')[0] : '')
 
 export default function App() {
-  const [status, setStatus] = useState({ stockfishOk: false, stockfishState: 'starting', overlayOk: false, extensionConnected: false, chessConnected: false, chessSite: null, message: '' })
+  const [status, setStatus] = useState({ stockfishOk: false, stockfishState: 'starting', overlayOk: false, extensionConnected: false, extensionUpdateAvailable: false, chessConnected: false, chessSite: null, message: '' })
   const [ev, setEv] = useState(null)
   const [pos, setPos] = useState(null)        // { fen, flipped } — authoritative current position
   const [page, setPage] = useState('evaluation')
@@ -23,7 +23,10 @@ export default function App() {
       setStatus(nextStatus)
       if (nextStatus.stockfishState !== 'ready') setEv(null)
     })
-    const offP = window.chessist.onPosition?.((p) => { posRef.current = p; setPos(p) })
+    const offP = window.chessist.onPosition?.((p) => {
+      posRef.current = p
+      setPos(previous => previous?.fen === p?.fen && previous?.flipped === p?.flipped ? previous : p)
+    })
     const offE = window.chessist.onEval((e) => {
       // Ignore speculative / stale evals — only show ones for the current board.
       const cur = posRef.current?.fen

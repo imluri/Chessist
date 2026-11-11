@@ -23,30 +23,21 @@ function Stat({ label, value }) {
   )
 }
 
-export default function EvalPanel({ ev }) {
-  // Game over: the engine reported no legal move for the side to move.
-  if (ev.gameOver) {
-    const mate = ev.gameOver === 'checkmate'
-    const fill = !mate ? 50 : (ev.winner === 'w' ? 100 : 0)
-    return (
-      <div>
-        <div style={{ height: 6, background: 'rgb(var(--surface))', position: 'relative', overflow: 'hidden', borderRadius: 999 }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${fill}%`, background: 'rgb(var(--accent))', transition: 'width 0.25s' }} />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: '12px 2px' }}>
-          <span style={{ fontSize: 24, fontWeight: 700 }}>{mate ? 'Checkmate' : 'Stalemate'}</span>
-          <span style={{ fontSize: 13, color: 'rgb(var(--fg-muted))' }}>
-            {mate ? `${ev.winner === 'w' ? 'White' : 'Black'} wins` : 'Draw'}
-          </span>
-        </div>
-      </div>
-    )
-  }
-
-  const { cp, mate } = whiteRelative(ev)
+export default function EvalPanel({ ev, pending }) {
+  // Keep the last score visible while evaluating the new position.
+  const previousGameOver = pending && ev?.gameOver
+  const current = previousGameOver ? {} : (ev || {})
+  const gameOver = current.gameOver
+  const checkmate = gameOver === 'checkmate'
+  const { cp, mate } = whiteRelative(current)
   let fill = 50
-  if (mate !== undefined) fill = mate > 0 ? 95 : 5
+  if (checkmate) fill = current.winner === 'w' ? 100 : 0
+  else if (mate !== undefined) fill = mate > 0 ? 95 : 5
   else if (cp !== undefined) fill = 50 + Math.max(-45, Math.min(45, cp / 50))
+  const score = gameOver ? (checkmate ? 'Checkmate' : 'Stalemate') : fmt(cp, mate)
+  const detail = pending ? 'Analyzing…' : gameOver
+    ? (checkmate ? `${current.winner === 'w' ? 'White' : 'Black'} wins` : 'Draw')
+    : `depth ${current.depth}`
 
   return (
     <div>
@@ -60,15 +51,15 @@ export default function EvalPanel({ ev }) {
 
       {/* score */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: '12px 2px 12px' }}>
-        <span style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmt(cp, mate)}</span>
-        <span style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', fontVariantNumeric: 'tabular-nums' }}>depth {ev.depth}</span>
+        <span style={{ fontSize: gameOver ? 24 : 28, lineHeight: '34px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{score}</span>
+        <span style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', fontVariantNumeric: 'tabular-nums' }}>{detail}</span>
       </div>
 
       {/* stats — no table borders, app font */}
-      <div style={{ display: 'flex', gap: 28, padding: '0 2px' }}>
-        <Stat label="Best move" value={ev.bestMove ?? '—'} />
-        <Stat label="Depth" value={String(ev.depth)} />
-        <Stat label="kNPS" value={ev.nps ? Math.round(ev.nps / 1000) : '—'} />
+      <div style={{ display: 'flex', gap: 28, padding: '0 2px', visibility: gameOver ? 'hidden' : undefined }}>
+        <Stat label="Best move" value={pending ? '—' : (current.bestMove ?? '—')} />
+        <Stat label="Depth" value={current.depth ?? '—'} />
+        <Stat label="kNPS" value={current.nps ? Math.round(current.nps / 1000) : '—'} />
       </div>
     </div>
   )

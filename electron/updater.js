@@ -196,6 +196,7 @@ async function applyUpdate(beta, onLog) {
     [NPM, ['install']],
     [NPM, ['run', 'build:overlay']],
     [NPM, ['run', 'build']],
+    [NPM, ['run', 'build:firefox']],
   ]
   for (const [cmd, args] of steps) {
     onLog?.(`\n$ ${cmd} ${args.join(' ')}\n`)

@@ -65,6 +65,7 @@ const componentStatus = {
   stockfishState: 'starting',
   overlayOk: false,
   extensionConnected: false,   // extension installed (service worker present)
+  extensionUpdateAvailable: false,
   chessConnected: false,       // a chess tab (content script) is active
   chessSite: null,             // 'Chess.com' | 'Lichess' when a chess tab is active
   message: '',
@@ -122,6 +123,11 @@ function startSubsystems() {
   bridge = new Bridge(engine, overlay, (c) => pushStatus(c))
   bridge.getGameSettings = () => gameSettings
   bridge.getStockfishState = () => componentStatus.stockfishState
+  const extensionVersions = {
+    chromium: readExtensionVersion(extensionDir()),
+    firefox: readExtensionVersion(firefoxDir()),
+  }
+  bridge.getBundledExtensionVersion = (browser) => extensionVersions[browser]
   bridge.onPosition = (p) => sendToRenderer('position', p)
   bridge.start()
   overlay.start()
@@ -202,16 +208,24 @@ function registerIpc() {
 
 // The bundled (or repo) browser-extension folder users load unpacked.
 function extensionDir() {
-  return isDev
-    ? path.join(__dirname, '..', 'extension')
-    : path.join(process.resourcesPath, 'extension')
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'extension')
+    : path.join(__dirname, '..', 'extension')
 }
 
 // The Firefox-flavored copy (build with `npm run build:firefox`; shipped in prod).
 function firefoxDir() {
-  return isDev
-    ? path.join(__dirname, '..', 'firefox')
-    : path.join(process.resourcesPath, 'firefox')
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'firefox')
+    : path.join(__dirname, '..', 'firefox')
+}
+
+function readExtensionVersion(directory) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8')).version
+  } catch {
+    return null
+  }
 }
 
 // Single instance: a second launch must not race for port 27301. If we can't get

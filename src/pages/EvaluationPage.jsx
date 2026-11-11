@@ -40,9 +40,10 @@ export default function EvaluationPage({ ev, pos, status, onOpenSetup }) {
   const hasPosition = !!(pos?.fen || ev?.fen)
 
   const evalMatches = ev?.fen && (!pos?.fen || piecesKey(ev.fen) === piecesKey(pos.fen))
-  const showEval = status.stockfishState === 'ready' && chessOn && ev && evalMatches
-  const gameOver = showEval && ev.gameOver ? ev.gameOver : null
-  const arrows = (showEval && !gameOver) ? arrowsFromEval(ev) : []
+  const showPanel = status.stockfishState === 'ready' && chessOn && hasPosition
+  const showCurrentEval = showPanel && evalMatches
+  const gameOver = showCurrentEval ? ev.gameOver : null
+  const arrows = (showCurrentEval && !gameOver) ? arrowsFromEval(ev) : []
 
   // On checkmate the side to move is mated — ring its king in red.
   const kingMark = gameOver === 'checkmate'
@@ -78,9 +79,9 @@ export default function EvaluationPage({ ev, pos, status, onOpenSetup }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 16, gap: 12, overflow: 'hidden' }}>
-      {/* header: eval panel (live) or status line */}
+      {/* Keep the header mounted between a position update and its evaluation. */}
       <div style={{ flexShrink: 0 }}>
-        {showEval ? <EvalPanel ev={ev} /> : (
+        {showPanel ? <EvalPanel ev={ev} pending={!showCurrentEval} /> : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
             <div style={{ width: 7, height: 7, borderRadius: '50%', background: dot }} />
             <span role="status" style={{ color: labelColor, fontWeight: 600 }}>{label}</span>

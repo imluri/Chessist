@@ -8,8 +8,45 @@
 // everywhere. The service worker connects to the app's WebSocket and identifies,
 // so the app shows "extension connected" regardless of which tab is open.
 const APP_WS_URL = 'ws://127.0.0.1:27301'
+const manifest = chrome.runtime.getManifest()
+const extensionBrowser = manifest.browser_specific_settings?.gecko ? 'firefox' : 'chromium'
+const RELOAD_TARGET_KEY = 'desktopExtensionReloadTarget'
 let _swWs = null
 let _swReconnect = null
+let checkingExtensionUpdate = false
+
+function isNewerExtensionVersion(version) {
+  if (typeof version !== 'string' || !/^\d{1,5}(?:\.\d{1,5}){0,3}$/.test(version)) return false
+  const current = manifest.version.split('.').map(Number)
+  const target = version.split('.').map(Number)
+  for (let i = 0; i < 4; i++) {
+    const difference = (target[i] ?? 0) - (current[i] ?? 0)
+    if (difference) return difference > 0
+  }
+  return false
+}
+
+async function reloadBundledUpdate(version) {
+  if (checkingExtensionUpdate || !isNewerExtensionVersion(version)) return
+  checkingExtensionUpdate = true
+  try {
+    const saved = await chrome.storage.local.get(RELOAD_TARGET_KEY)
+    if (saved[RELOAD_TARGET_KEY] === version) return
+
+    // The running manifest describes the loaded version. Read the extension's
+    // own folder to confirm the installer actually replaced its files.
+    const response = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })
+    if (!response.ok || (await response.json()).version !== version) return
+
+    // Keep the marker across worker restarts so a failed reload cannot loop.
+    await chrome.storage.local.set({ [RELOAD_TARGET_KEY]: version })
+    chrome.runtime.reload()
+  } catch (_) {
+    // The desktop Setup page can still guide the user through a manual reload.
+  } finally {
+    checkingExtensionUpdate = false
+  }
+}
 
 function connectPresence() {
   // Already connecting/open?
@@ -17,10 +54,16 @@ function connectPresence() {
   try {
     _swWs = new WebSocket(APP_WS_URL)
     _swWs.onopen = () => {
-      try { _swWs.send(JSON.stringify({ type: 'identify', role: 'extension' })) } catch (e) {}
+      try {
+        _swWs.send(JSON.stringify({ type: 'identify', role: 'extension', browser: extensionBrowser, version: manifest.version }))
+      } catch (e) {}
     }
     // Incoming messages (heartbeat pings, eval broadcasts) keep the MV3 worker alive.
-    _swWs.onmessage = () => {}
+    _swWs.onmessage = (event) => {
+      let message
+      try { message = JSON.parse(event.data) } catch (_) { return }
+      if (message?.type === 'extension_update') return reloadBundledUpdate(message.version)
+    }
     _swWs.onclose = () => { _swWs = null; scheduleReconnect() }
     _swWs.onerror = () => { try { _swWs.close() } catch (e) {} }
   } catch (e) {
