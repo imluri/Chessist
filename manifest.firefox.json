@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chessist",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Live chess evaluation bar for Chess.com and Lichess - powered by Stockfish. Created by imluri.",
   "browser_specific_settings": {
     "gecko": {

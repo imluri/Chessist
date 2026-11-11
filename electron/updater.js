@@ -1,13 +1,12 @@
-// In-app git self-update: checks GitHub for newer commits on origin/main and,
-// on request, pulls + reinstalls + rebuilds, then the app relaunches.
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
-const https = require('https')
+const { installerAsset, installerPath, clearInstallerFiles, downloadInstaller, launchInstaller } = require('./installer-updater')
 
 const ROOT = path.join(__dirname, '..')        // repo root (when run from source)
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const REPO = 'imluri/Chessist'
+const LATEST_RELEASE = `https://api.github.com/repos/${REPO}/releases/latest`
 
 function isGitRepo() {
   return fs.existsSync(path.join(ROOT, '.git'))
@@ -18,36 +17,30 @@ function appVersion() {
   catch { try { return require('../package.json').version } catch { return '' } }
 }
 
-// GET a GitHub API endpoint as JSON (User-Agent is required by GitHub).
-// Prefer Electron's net (Chromium stack → OS cert store + system proxy, so it
-// works behind corporate TLS interception); fall back to node https off-Electron.
-function httpJson(url) {
-  return new Promise((resolve, reject) => {
-    const headers = { 'User-Agent': 'Chessist', Accept: 'application/vnd.github+json' }
-    const finish = (statusCode, body) => {
-      if (statusCode < 200 || statusCode >= 300) return reject(new Error('HTTP ' + statusCode))
-      try { resolve(JSON.parse(body)) } catch (e) { reject(e) }
-    }
-    let net
-    try { net = require('electron').net } catch (e) { net = null }
-    if (net) {
-      const req = net.request(url)
-      for (const [k, v] of Object.entries(headers)) req.setHeader(k, v)
-      let body = ''
-      req.on('response', (res) => {
-        res.on('data', (d) => { body += d })
-        res.on('end', () => finish(res.statusCode, body))
-      })
-      req.on('error', reject)
-      req.end()
-    } else {
-      https.get(url, { headers }, (res) => {
-        let body = ''
-        res.on('data', (d) => { body += d })
-        res.on('end', () => finish(res.statusCode, body))
-      }).on('error', reject)
-    }
+function installedOnWindows() {
+  const { app } = require('electron')
+  // An unpacked build also has app.isPackaged. NSIS adds the adjacent uninstaller.
+  return process.platform === 'win32' && app?.isPackaged &&
+    fs.existsSync(path.join(path.dirname(app.getPath('exe')), 'Uninstall Chessist.exe'))
+}
+
+function githubFetch(url, options = {}) {
+  const { net } = require('electron')
+  const request = {
+    ...options,
+    credentials: 'omit',
+    headers: { 'User-Agent': 'Chessist', ...options.headers },
+  }
+  return net ? net.fetch(url, request) : fetch(url, request)
+}
+
+async function httpJson(url) {
+  const response = await githubFetch(url, {
+    headers: { Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(15000),
   })
+  if (!response.ok) throw Object.assign(new Error(`GitHub returned HTTP ${response.status}`), { status: response.status })
+  return response.json()
 }
 
 // Numeric semver compare; true when `remote` is strictly newer than `installed`.
@@ -61,9 +54,57 @@ function isNewer(remote, installed) {
   return false
 }
 
-// Non-git installs (ZIP / packaged) can't run git, so we query GitHub over HTTP
-// like a normal release check. We can detect a newer version but can't auto-apply,
-// so the result is flagged `manual` and the UI links to the Releases page.
+async function checkInstallerUpdate() {
+  const version = appVersion()
+  const status = { installer: true, channel: 'stable', version }
+  try {
+    const release = await httpJson(LATEST_RELEASE)
+    const tag = release.tag_name
+    const available = /^v\d+\.\d+\.\d+$/.test(tag) && !release.draft && !release.prerelease && isNewer(tag, version)
+    if (!available) return { status: { ...status, tag, available: false } }
+    const asset = installerAsset(release, process.arch)
+    return {
+      status: { ...status, tag, available, canApply: !!asset, manual: !asset },
+      asset,
+    }
+  } catch (error) {
+    if (error.status === 404) return { status: { ...status, noReleases: true } }
+    return { status: { ...status, error: 'Could not check for updates on GitHub. Try again.' } }
+  }
+}
+
+async function applyInstallerUpdate(onLog) {
+  const { status, asset } = await checkInstallerUpdate()
+  if (status.error) return { ok: false, error: status.error }
+  if (!status.available) return { ok: false, error: 'There is no newer release available.' }
+  if (!asset) return { ok: false, error: 'The release does not have a compatible installer that Chessist can verify.' }
+
+  const { app } = require('electron')
+  const file = installerPath(app.getPath('userData'))
+  // Build the URL from the official repository and the selected asset name.
+  const url = `https://github.com/${REPO}/releases/download/${status.tag}/${encodeURIComponent(asset.name)}`
+  try {
+    await downloadInstaller(githubFetch, url, asset, file, onLog)
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+  onLog?.('Starting the installer…\n')
+  try {
+    await launchInstaller(file)
+    return { ok: true, installer: true }
+  } catch {
+    await clearInstallerFiles(file)
+    return { ok: false, error: 'Windows could not start the update installer. Try again or open the release.' }
+  }
+}
+
+async function clearInstallerCache() {
+  if (!installedOnWindows()) return
+  const { app } = require('electron')
+  await clearInstallerFiles(installerPath(app.getPath('userData')))
+}
+
+// ZIP and unpacked builds check GitHub for updates and link to the Releases page.
 //   stable → newest release tag vs installed version
 //   beta   → tip-of-main commit SHA (UI compares to the baked build SHA)
 async function checkRemote(beta) {
@@ -74,7 +115,7 @@ async function checkRemote(beta) {
       return { channel: 'beta', manual: true, latestSha: String(c.sha || '').slice(0, 7), version: installed }
     }
     let tag
-    try { tag = (await httpJson(`https://api.github.com/repos/${REPO}/releases/latest`)).tag_name }
+    try { tag = (await httpJson(LATEST_RELEASE)).tag_name }
     catch { const tags = await httpJson(`https://api.github.com/repos/${REPO}/tags`); tag = tags && tags[0] && tags[0].name }
     if (!tag) return { channel: 'stable', manual: true, noReleases: true, version: installed }
     return { channel: 'stable', manual: true, tag, available: isNewer(tag, installed), version: installed }
@@ -111,6 +152,7 @@ async function latestTag() {
 // stable→ track the newest release tag (v*); no tags yet = nothing to update to.
 // Returns { unsupported } | { error } | { channel, available, behind?, tag?, noReleases? }.
 async function checkForUpdate(beta = false) {
+  if (installedOnWindows()) return (await checkInstallerUpdate()).status
   if (!isGitRepo()) return checkRemote(beta)
   if ((await run('git', ['rev-parse', 'HEAD'])).code !== 0) return { error: 'Not a git checkout.' }
   const fetch = await run('git', ['fetch', '--quiet', '--tags', 'origin', 'main'])
@@ -132,6 +174,9 @@ async function checkForUpdate(beta = false) {
 
 // Checks out the channel target, reinstalls, rebuilds. Returns { ok } | { ok:false, step, code }.
 async function applyUpdate(beta, onLog) {
+  if (installedOnWindows()) return applyInstallerUpdate(onLog)
+  if (!isGitRepo()) return { ok: false, error: 'Open the release to download the update.' }
+
   onLog?.('\n$ git fetch --tags origin main\n')
   let r = await run('git', ['fetch', '--tags', 'origin', 'main'], onLog)
   if (r.code !== 0) return { ok: false, step: 'git fetch', code: r.code }
@@ -164,4 +209,4 @@ async function applyUpdate(beta, onLog) {
   return { ok: true }
 }
 
-module.exports = { isGitRepo, latestTag, checkForUpdate, applyUpdate }
+module.exports = { isGitRepo, latestTag, checkForUpdate, applyUpdate, clearInstallerCache }

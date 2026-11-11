@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.4] — 2026-11-12
+
+### Added
+
+- **Update & restart** in **About → Updates** for Windows installer builds. Chessist downloads and
+  verifies the matching stable installer from GitHub, then restarts after installation.
+- Download progress and retry feedback for in-app updates.
+
+Users on earlier Windows installer builds need to install v2.0.4 manually once. Future stable
+releases can be installed from the app.
+
 ## [2.0.3] — 2026-11-12
 
 ### Fixed

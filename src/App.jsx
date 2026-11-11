@@ -61,7 +61,9 @@ export default function App() {
           <div style={{ flex: 1, minHeight: 0, overflowY: page === 'evaluation' ? 'hidden' : 'auto' }}>
             {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} onOpenSetup={() => setPage('setup')} />}
             {page === 'setup' && <SetupPage status={status} />}
-            {page === 'about' && <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />}
+            <div hidden={page !== 'about'}>
+              <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />
+            </div>
           </div>
         </main>
       </div>

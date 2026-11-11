@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import logo from '../assets/logo.png'
 import Check from '../components/controls/Check'
 
-const VERSION = '2.0.3'
+const VERSION = '2.0.4'
 // Baked at build time when git is available (see vite.config.js). Empty for source-ZIP builds.
 const BUILD_SHA = (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '')
 const RELEASES_URL = 'https://github.com/imluri/Chessist/releases'
@@ -27,22 +27,45 @@ const btnGhost = { ...btn, background: 'rgb(var(--surface))', color: 'rgb(var(--
 function Updates({ status, onChange }) {
   const [busy, setBusy] = useState(false)   // checking
   const [applying, setApplying] = useState(false)
+  const [applyError, setApplyError] = useState('')
   const [beta, setBetaState] = useState(false)
   const [log, setLog] = useState('')
   const logRef = useRef(null)
 
   useEffect(() => {
-    window.chessist.getBeta?.().then(setBetaState)
+    window.chessist.getBeta().then(setBetaState).catch(() => {})
     const off = window.chessist.onUpdateLog((line) => setLog(prev => prev + line))
     return off
   }, [])
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [log])
 
-  const check = async () => { setBusy(true); try { onChange(await window.chessist.checkUpdate()) } finally { setBusy(false) } }
+  const check = async () => {
+    setBusy(true)
+    setApplyError('')
+    try {
+      onChange(await window.chessist.checkUpdate())
+    } catch {
+      onChange({ installer: status?.installer, error: 'Could not check for updates. Try again.' })
+    } finally {
+      setBusy(false)
+    }
+  }
   const apply = async () => {
-    setApplying(true); setLog('')
-    try { const r = await window.chessist.applyUpdate(); if (!r.ok) setLog(prev => prev + `\nUpdate failed at: ${r.step}\n`) }
-    finally { setApplying(false) }
+    setApplying(true)
+    setApplyError('')
+    setLog('')
+    try {
+      const result = await window.chessist.applyUpdate()
+      if (!result.ok) {
+        setApplyError(result.error || result.message || (result.step
+          ? `Update failed at ${result.step}.`
+          : 'Could not install the update. Try again.'))
+        setApplying(false)
+      }
+    } catch {
+      setApplyError('Could not install the update. Try again.')
+      setApplying(false)
+    }
   }
   const toggleBeta = async (v) => {
     setBetaState(v)
@@ -52,20 +75,21 @@ function Updates({ status, onChange }) {
 
   let line = 'Checking…'
   let color = 'rgb(var(--fg-muted))'
-  let manualUpdate = false   // non-git install with an update → link to Releases instead of auto-applying
+  let manualUpdate = false
   if (status) {
     if (status.error) { line = status.error; color = 'rgb(var(--status-red))' }
     else if (status.unsupported) { line = 'Updates apply to git installs only.'; color = 'rgb(var(--fg-dim))' }
     else if (status.noReleases) { line = 'No stable release published yet.'; color = 'rgb(var(--fg-dim))' }
     else if (status.manual) {
-      // Checked over HTTP (no local git): we can detect a newer version but not auto-apply.
       let avail = status.available
       if (status.channel === 'beta') avail = !!BUILD_SHA && !!status.latestSha && BUILD_SHA !== status.latestSha
       if (avail) {
         manualUpdate = true
         line = status.channel === 'beta'
           ? 'New commit available on main — download the latest build.'
-          : `Update available — ${status.tag}. Download the latest build.`
+          : status.installer
+            ? `Update available — ${status.tag}. See the release for download options.`
+            : `Update available — ${status.tag}. Download the latest build.`
         color = 'rgb(var(--status-yellow))'
       } else { line = 'You are on the latest version.'; color = 'rgb(var(--status-green))' }
     }
@@ -74,8 +98,10 @@ function Updates({ status, onChange }) {
     else { line = 'You are on the latest version.'; color = 'rgb(var(--status-green))' }
   }
 
-  const channelName = beta ? 'beta' : 'stable'
+  const channelName = status?.channel || (beta ? 'beta' : 'stable')
   const head = status?.head || BUILD_SHA
+  const canApply = status?.available && !status.manual && (!status.installer || status.canApply)
+  const releaseUrl = status?.tag ? `${RELEASES_URL}/tag/${encodeURIComponent(status.tag)}` : RELEASES_URL
 
   return (
     <div className="scard" style={{ padding: 14, marginTop: 8 }}>
@@ -88,22 +114,26 @@ function Updates({ status, onChange }) {
         {' '}· <span>{channelName} channel</span>
       </div>
 
-      <div style={{ fontSize: 12, color, marginBottom: 12 }}>{applying ? 'Updating…' : line}</div>
+      <div role="status" style={{ fontSize: 12, color: applyError ? 'rgb(var(--status-red))' : color, marginBottom: 12 }}>
+        {applyError || (applying ? 'Updating…' : line)}
+      </div>
 
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, cursor: 'pointer' }}>
-        <Check checked={beta} onChange={toggleBeta} />
-        <span style={{ fontSize: 12 }}>
-          <span style={{ fontWeight: 600 }}>Beta channel</span>
-          <span style={{ color: 'rgb(var(--fg-dim))' }}> — update on every commit (off = released versions only)</span>
-        </span>
-      </label>
+      {status && !status.installer && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, cursor: 'pointer' }}>
+          <Check checked={beta} onChange={toggleBeta} disabled={busy || applying} />
+          <span style={{ fontSize: 12 }}>
+            <span style={{ fontWeight: 600 }}>Beta channel</span>
+            <span style={{ color: 'rgb(var(--fg-dim))' }}> — update on every commit (off = released versions only)</span>
+          </span>
+        </label>
+      )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {manualUpdate && (
-          <button style={btn} onClick={() => window.chessist.openExternal(RELEASES_URL)}>Download update</button>
+        {(manualUpdate || (applyError && status?.installer && status.available)) && (
+          <button style={btn} onClick={() => window.chessist.openExternal(releaseUrl)}>{status.installer ? 'View release' : 'Download update'}</button>
         )}
-        {!status?.manual && status?.available && !applying && (
-          <button style={btn} onClick={apply}>Update &amp; restart</button>
+        {canApply && !applying && (
+          <button style={btn} disabled={busy} onClick={apply}>Update &amp; restart</button>
         )}
         <button style={btnGhost} disabled={busy || applying} onClick={check}>
           {busy ? 'Checking…' : 'Check for updates'}

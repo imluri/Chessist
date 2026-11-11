@@ -54,9 +54,10 @@ Windows 10/11. The transparent overlay is Windows-only.
 5. Open a game on chess.com or lichess.org. The board and evaluation appear in the app; choose your
    render mode and tweak settings via the **gear** (Settings → Game / Engine).
 
-**Updating:** the **About** tab checks GitHub for new versions. A git clone updates in place
-(stable = release tags, beta = every commit on `main`); a ZIP install gets a one-click link to the
-latest release.
+**Updating:** open **About → Updates**. Windows installer builds with in-app updates can download
+the next stable release and restart Chessist from **Update & restart**. Older installer builds
+need one manual upgrade to get this feature. Git clones can update in place from release tags
+or from `main` with the beta channel. Source ZIP builds link to the release page.
 
 ## Using the app
 

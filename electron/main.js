@@ -17,6 +17,7 @@ let engine = null
 let overlay = null
 let bridge = null
 let stockfishTask = null
+let updateInProgress = false
 
 // ── Settings persistence (userData/chessist-settings.json = { engine, game }) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
@@ -173,9 +174,17 @@ function registerIpc() {
   ipcMain.handle('update:set-beta', (_e, beta) => { appPrefs.betaUpdates = !!beta; saveAll(); return appPrefs.betaUpdates })
   ipcMain.handle('update:check', () => updater.checkForUpdate(appPrefs.betaUpdates))
   ipcMain.handle('update:apply', async () => {
-    const res = await updater.applyUpdate(appPrefs.betaUpdates, (line) => sendToRenderer('update:log', line))
-    if (res.ok) setTimeout(() => { app.relaunch(); app.exit(0) }, 1000)
-    return res
+    if (updateInProgress) return { ok: false, error: 'An update is already in progress.' }
+    updateInProgress = true
+    let result
+    try {
+      result = await updater.applyUpdate(appPrefs.betaUpdates, (line) => sendToRenderer('update:log', line))
+      if (result.installer) setImmediate(() => app.quit())
+      else if (result.ok) setTimeout(() => { app.relaunch(); app.exit(0) }, 1000)
+      return result
+    } finally {
+      if (!result?.ok) updateInProgress = false
+    }
   })
   ipcMain.handle('shell:open', (_e, url) => { try { shell.openExternal(url) } catch {} })
   ipcMain.handle('extension:path', () => extensionDir())
@@ -217,7 +226,8 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    await updater.clearInstallerCache()
     Menu.setApplicationMenu(null)
     registerIpc()
     createWindow()
