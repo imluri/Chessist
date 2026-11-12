@@ -16,8 +16,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [updateStatus, setUpdateStatus] = useState(null)
   const [settings, setSettings] = useState({ game: null, engine: null })
+  const [settingsError, setSettingsError] = useState('')
   const [shortcutIds, setShortcutIds] = useState(null)
   const [shortcutError, setShortcutError] = useState('')
+  const settingWrites = useRef(new Map())
   const posRef = useRef(null)
 
   useEffect(() => {
@@ -36,16 +38,31 @@ export default function App() {
     return () => { mounted = false }
   }, [])
 
-  function changeSetting(scope, key, value) {
+  async function changeSetting(scope, key, value) {
     const api = window.chessist
-    const previousValue = settings[scope][key]
-    setSettings(previous => ({ ...previous, [scope]: { ...previous[scope], [key]: value } }))
+    const read = scope === 'game' ? api.getGameSettings : api.getEngineSettings
     const write = scope === 'game' ? api.setGameOption : api.setEngineOption
-    write(key, value).catch(() => {
-      setSettings(previous => previous[scope][key] !== value ? previous : {
-        ...previous, [scope]: { ...previous[scope], [key]: previousValue },
-      })
-    })
+    const field = `${scope}.${key}`
+    const request = Symbol(field)
+    const previousValue = settings[scope][key]
+    const update = (nextValue) => setSettings(previous => ({
+      ...previous, [scope]: { ...previous[scope], [key]: nextValue },
+    }))
+    settingWrites.current.set(field, request)
+    setSettingsError('')
+    update(value)
+
+    try {
+      const saved = await write(key, value)
+      if (!saved || !Object.hasOwn(saved, key)) throw new Error('Missing saved setting')
+      if (settingWrites.current.get(field) === request) update(saved[key])
+    } catch {
+      if (settingWrites.current.get(field) !== request) return
+      const saved = await read().catch(() => null)
+      if (settingWrites.current.get(field) !== request) return
+      update(saved && Object.hasOwn(saved, key) ? saved[key] : previousValue)
+      setSettingsError('Could not save the setting. Try again.')
+    }
   }
 
   function changeShortcuts(ids) {
@@ -107,7 +124,8 @@ export default function App() {
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0, overflowY: page === 'evaluation' ? 'hidden' : 'auto' }}>
-            {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} onOpenSetup={() => setPage('setup')} />}
+            {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} gameSettings={settings.game}
+              onOpenSetup={() => setPage('setup')} />}
             {page === 'setup' && <SetupPage status={status} />}
             <div hidden={page !== 'about'}>
               <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />
@@ -119,6 +137,15 @@ export default function App() {
         gameSettings={settings.game} engineSettings={settings.engine}
         onGameChange={(key, value) => changeSetting('game', key, value)}
         onEngineChange={(key, value) => changeSetting('engine', key, value)} />}
+      {settingsError && (
+        <div role="alert" style={{
+          position: 'fixed', right: 16, bottom: 16, zIndex: 1001, padding: '8px 12px', fontSize: 12,
+          color: 'rgb(var(--status-red))', background: 'rgb(var(--bg))', border: '1px solid rgb(var(--border))',
+          borderRadius: 'var(--radius-sm)',
+        }}>
+          {settingsError}
+        </div>
+      )}
     </div>
   )
 }

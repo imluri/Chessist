@@ -101,6 +101,47 @@ describe('Engine evaluation queue', () => {
     ])
   })
 
+  it('stops before applying changed settings and resumes with the latest position', () => {
+    const engine = new Engine()
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+    engine.evaluate(first, 18, 1)
+    send.mockClear()
+
+    engine.applySetting('skillLevel', 12)
+    engine.applySetting('skillLevel', 8)
+    engine.applySetting('limitStrength', true)
+    engine.applySetting('elo', 1800)
+    engine.evaluate(next, 18, 1)
+    expect(send.mock.calls.flat()).toEqual(['stop'])
+
+    engine._handle('bestmove a1a2')
+    expect(send.mock.calls.flat()).toEqual([
+      'stop', 'setoption name Skill Level value 8', 'setoption name UCI_LimitStrength value true',
+      'setoption name UCI_Elo value 1800', `position fen ${next}`, 'go depth 18',
+    ])
+  })
+
+  it('refreshes a completed evaluation after a settings change and respects an explicit stop', () => {
+    const engine = new Engine()
+    engine.ready = true
+    const send = vi.spyOn(engine, '_send')
+    engine.evaluate(first, 18, 1)
+    engine._handle('bestmove a1a2')
+    send.mockClear()
+
+    engine.applySetting('threads', 2)
+    expect(send.mock.calls.flat()).toEqual([
+      'setoption name Threads value 2', `position fen ${first}`, 'go depth 18',
+    ])
+
+    engine.stop()
+    engine._handle('bestmove a1a2')
+    send.mockClear()
+    engine.applySetting('threads', 3)
+    expect(send.mock.calls.flat()).toEqual(['setoption name Threads value 3'])
+  })
+
   it('keeps the latest request when it returns to the position being stopped', () => {
     const engine = new Engine()
     engine.ready = true

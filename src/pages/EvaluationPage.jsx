@@ -24,26 +24,27 @@ function kingSquare(fen, color) {
   return null
 }
 
-function arrowsFromEval(ev) {
+function arrowsFromEval(ev, showAltArrows) {
   const moves = (ev.multiPvMoves && ev.multiPvMoves.length) ? ev.multiPvMoves : (ev.bestMove ? [ev.bestMove] : [])
   return moves
     .filter(m => typeof m === 'string' && m.length >= 4)
-    .slice(0, 3)
+    .slice(0, showAltArrows ? 3 : 1)
     .map((m, i) => ({ from: m.slice(0, 2), to: m.slice(2, 4), idx: i }))
 }
 
-export default function EvaluationPage({ ev, pos, status, onOpenSetup }) {
+export default function EvaluationPage({ ev, pos, status, gameSettings, onOpenSetup }) {
   const chessOn = status.chessConnected        // a chess tab is active
   const extOn = status.extensionConnected      // extension installed (service worker)
   const boardFen = pos?.fen || ev?.fen || START_FEN
   const flipped = !!pos?.flipped
   const hasPosition = !!(pos?.fen || ev?.fen)
+  const analysisEnabled = gameSettings?.enabled !== false
 
   const evalMatches = ev?.fen && (!pos?.fen || piecesKey(ev.fen) === piecesKey(pos.fen))
-  const showPanel = status.stockfishState === 'ready' && chessOn && hasPosition
+  const showPanel = status.stockfishState === 'ready' && analysisEnabled && chessOn && hasPosition
   const showCurrentEval = showPanel && evalMatches
   const gameOver = showCurrentEval ? ev.gameOver : null
-  const arrows = (showCurrentEval && !gameOver) ? arrowsFromEval(ev) : []
+  const arrows = (showCurrentEval && !gameOver) ? arrowsFromEval(ev, gameSettings?.showAltArrows) : []
 
   // On checkmate the side to move is mated — ring its king in red.
   const kingMark = gameOver === 'checkmate'
@@ -61,6 +62,8 @@ export default function EvaluationPage({ ev, pos, status, onOpenSetup }) {
   if (STOCKFISH_LABELS[status.stockfishState]) {
     label = STOCKFISH_LABELS[status.stockfishState]
     if (stockfishFailed) dot = labelColor = 'rgb(var(--status-red))'
+  } else if (status.stockfishState === 'ready' && !analysisEnabled) {
+    label = 'Analysis disabled'
   } else if (chessOn) {
     label = hasPosition ? 'Analyzing…' : `On ${site}`
     hint = hasPosition ? '' : `You're on ${site} — start a game to see analysis.`

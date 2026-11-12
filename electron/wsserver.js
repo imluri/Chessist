@@ -120,7 +120,9 @@ class Bridge {
     if (msg.type === 'position') { this.onPosition?.({ fen: msg.fen, flipped: !!msg.flipped }); return }
     if (msg.type === 'ping' || msg.type === 'pong') return
     if (msg.type === 'evaluate') { this.engine.evaluate(msg.fen, msg.depth, msg.multiPv, msg.force === true); return }
-    if (msg.type === 'set_option') { this.engine.setOption(msg.name, msg.value); return }
+    // Older tabs may try to overwrite desktop options on reconnect. MultiPV
+    // is already supplied with each search request.
+    if (msg.type === 'set_option') return
     if (msg.type === 'stop') { this.engine.stop(); return }
     // New game → reset the transposition table. Normal moves NEVER reset (hash is reused).
     if (msg.type === 'new_game') { this.engine.newGame(); return }

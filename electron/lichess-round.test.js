@@ -24,6 +24,9 @@ const fixtureScript = source.replace(/\}\)\(\);\s*$/, `
     getGameId, isInOwnGame, applyPushedSettings, prepareAutoMove, checkForPositionChange, observeBoard,
     startCountdown, executeScheduledMove: _executeMoveVerified,
     connectEngine: _connectEngineWs,
+    primeAnalysisCache(fen) {
+      _preWarmCache = { fenKey: _fenKey(fen), eval: { fen, depth: 18 } };
+    },
     evaluateMove(fen, bestMove, fromCache) {
       prepareAutoMove(fen);
       updateEval({ fen, turn: currentTurn, depth: 11, bestMove, fromCache });
@@ -175,6 +178,12 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       await Promise.resolve()
       return engineMessages
     },
+    closeEngine() {
+      onEngineMessage({ kind: 'closed' })
+    },
+    sendEngineSettings(data) {
+      onEngineMessage({ kind: 'frame', data: JSON.stringify({ type: 'settings', data }) })
+    },
     sendEngineEvaluation(fen, bestMove) {
       const data = { fen, turn: fen.split(' ')[1], depth: 5, bestMove }
       onEngineMessage({ kind: 'frame', data: JSON.stringify({ type: 'eval', data }) })
@@ -226,16 +235,42 @@ describe('Lichess round recognition', () => {
     expect(loadRound('/analysis').isInOwnGame()).toBe(false)
   })
 
-  it('requests the current position and syncs options when the engine connection opens', async () => {
+  it('waits for desktop settings on each connection and sends no raw engine options', async () => {
     const round = loadRound('/game/aB3dEf56', { participant: true })
     round.state.fen = blackMovedFen
     round.prepareAutoMove(blackMovedFen)
-    await expect(round.openEngine()).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'identify', site: 'Lichess' }),
-      expect.objectContaining({ type: 'evaluate', fen: blackMovedFen }),
-      { type: 'set_option', name: 'Skill Level', value: '14' },
-      { type: 'set_option', name: 'MultiPV', value: '3' },
-    ]))
+    await round.openEngine()
+    expect(round.engineMessages).toEqual([{ type: 'identify', role: 'content', site: 'Lichess' }])
+
+    round.sendEngineSettings({ depth: 24, showAltArrows: false })
+    const evaluations = () => round.engineMessages.filter(({ type }) => type === 'evaluate')
+    expect(evaluations()).toEqual([{ type: 'evaluate', fen: blackMovedFen, depth: 24, multiPv: 1 }])
+
+    round.closeEngine()
+    await round.openEngine()
+    expect(evaluations()).toHaveLength(1)
+    round.sendEngineSettings({ depth: 26, showAltArrows: true })
+    expect(evaluations()).toHaveLength(2)
+    expect(evaluations().at(-1)).toEqual({ type: 'evaluate', fen: blackMovedFen, depth: 26, multiPv: 3 })
+    expect(round.engineMessages.some(({ type }) => type === 'set_option')).toBe(false)
+  })
+
+  it.each([
+    [{ depth: 24 }, 24, 1],
+    [{ showAltArrows: true }, 18, 3],
+  ])('discards a cached analysis after a desktop settings change (%j)', async (settings, depth, multiPv) => {
+    const round = loadRound('/game/aB3dEf56', { participant: true })
+    round.state.fen = blackMovedFen
+    round.prepareAutoMove(blackMovedFen)
+    await round.openEngine()
+    round.sendEngineSettings({ depth: 18, showAltArrows: false })
+    round.primeAnalysisCache(blackMovedFen)
+
+    round.sendEngineSettings(settings)
+
+    const evaluations = round.engineMessages.filter(({ type }) => type === 'evaluate')
+    expect(evaluations).toHaveLength(2)
+    expect(evaluations.at(-1)).toEqual({ type: 'evaluate', fen: blackMovedFen, depth, multiPv })
   })
 })
 
@@ -423,6 +458,7 @@ describe('Lichess opening analysis', () => {
     const round = loadRound('/game/aB3dEf56', { participant: true })
     round.applyPushedSettings({ autoMove: true, instantMove: true })
     await round.openEngine()
+    round.sendEngineSettings({ autoMove: true, instantMove: true })
     await round.pollPosition()
     round.sendEngineEvaluation(openingFen, 'e2e4')
     await round.pollPosition()
@@ -449,6 +485,7 @@ describe('Lichess opening analysis', () => {
     const round = loadRound('/game/aB3dEf56', { participant: true, color: 'black' })
     round.applyPushedSettings({ autoMove: true, instantMove: true })
     await round.openEngine()
+    round.sendEngineSettings({ autoMove: true, instantMove: true })
     await round.pollPosition()
     round.sendEngineEvaluation(openingFen, 'e2e4')
     expect(round.relayMessages).toEqual([])
@@ -478,6 +515,7 @@ describe('Lichess opening analysis', () => {
     const round = loadRound('/game/aB3dEf56', { participant: true })
     round.applyPushedSettings({ enabled: false })
     await round.openEngine()
+    round.sendEngineSettings({ enabled: false })
     await round.pollPosition()
     expect(evaluationRequests(round)).toEqual([])
 

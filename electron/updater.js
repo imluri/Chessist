@@ -7,6 +7,7 @@ const ROOT = path.join(__dirname, '..')        // repo root (when run from sourc
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const REPO = 'imluri/Chessist'
 const LATEST_RELEASE = `https://api.github.com/repos/${REPO}/releases/latest`
+const UPDATE_VERSION_CHANGED = 'The available version changed. Check for updates again.'
 
 function isGitRepo() {
   return fs.existsSync(path.join(ROOT, '.git'))
@@ -54,6 +55,11 @@ function isNewer(remote, installed) {
   return false
 }
 
+function withReleaseNotes(status, body) {
+  const releaseNotes = typeof body === 'string' ? body.trim() : ''
+  return releaseNotes ? { ...status, releaseNotes } : status
+}
+
 async function checkInstallerUpdate() {
   const version = appVersion()
   const status = { installer: true, channel: 'stable', version }
@@ -64,7 +70,7 @@ async function checkInstallerUpdate() {
     if (!available) return { status: { ...status, tag, available: false } }
     const asset = installerAsset(release, process.arch)
     return {
-      status: { ...status, tag, available, canApply: !!asset, manual: !asset },
+      status: withReleaseNotes({ ...status, tag, available, canApply: !!asset, manual: !asset }, release.body),
       asset,
     }
   } catch (error) {
@@ -73,9 +79,10 @@ async function checkInstallerUpdate() {
   }
 }
 
-async function applyInstallerUpdate(onLog) {
+async function applyInstallerUpdate(onLog, expectedTag) {
   const { status, asset } = await checkInstallerUpdate()
   if (status.error) return { ok: false, error: status.error }
+  if (expectedTag && expectedTag !== status.tag) return { ok: false, error: UPDATE_VERSION_CHANGED }
   if (!status.available) return { ok: false, error: 'There is no newer release available.' }
   if (!asset) return { ok: false, error: 'The release does not have a compatible installer that Chessist can verify.' }
 
@@ -114,11 +121,16 @@ async function checkRemote(beta) {
       const c = await httpJson(`https://api.github.com/repos/${REPO}/commits/main`)
       return { channel: 'beta', manual: true, latestSha: String(c.sha || '').slice(0, 7), version: installed }
     }
-    let tag
-    try { tag = (await httpJson(LATEST_RELEASE)).tag_name }
+    let tag, releaseNotes
+    try {
+      const release = await httpJson(LATEST_RELEASE)
+      tag = release.tag_name
+      releaseNotes = release.body
+    }
     catch { const tags = await httpJson(`https://api.github.com/repos/${REPO}/tags`); tag = tags && tags[0] && tags[0].name }
     if (!tag) return { channel: 'stable', manual: true, noReleases: true, version: installed }
-    return { channel: 'stable', manual: true, tag, available: isNewer(tag, installed), version: installed }
+    const status = { channel: 'stable', manual: true, tag, available: isNewer(tag, installed), version: installed }
+    return status.available ? withReleaseNotes(status, releaseNotes) : status
   } catch (e) {
     return { manual: true, error: 'Could not reach GitHub.' }
   }
@@ -148,6 +160,18 @@ async function latestTag() {
   return tags ? tags.split(/\r?\n/)[0].trim() : ''
 }
 
+async function changelogNotes(tag) {
+  const changelog = await run('git', ['show', `${tag}:CHANGELOG.md`])
+  if (changelog.code !== 0) return
+
+  const version = tag.replace(/^v/i, '')
+  for (const section of changelog.out.split(/^##[ \t]+/m).slice(1)) {
+    const heading = section.match(/^(?:\[([^\]]+)\]|(\S+))[^\r\n]*(?:\r?\n|$)/)
+    const headingVersion = (heading?.[1] ?? heading?.[2])?.replace(/^v/i, '')
+    if (headingVersion === version) return section.slice(heading[0].length)
+  }
+}
+
 // beta  → track origin/main (any new commit is an update).
 // stable→ track the newest release tag (v*); no tags yet = nothing to update to.
 // Returns { unsupported } | { error } | { channel, available, behind?, tag?, noReleases? }.
@@ -169,12 +193,13 @@ async function checkForUpdate(beta = false) {
   const tag = await latestTag()
   if (!tag) return { channel: 'stable', available: false, noReleases: true, head: headShort }
   const tagSha = (await run('git', ['rev-list', '-n', '1', tag])).out.trim()
-  return { channel: 'stable', available: !!tagSha && tagSha !== head, tag, head: headShort }
+  const status = { channel: 'stable', available: !!tagSha && tagSha !== head, tag, head: headShort }
+  return status.available ? withReleaseNotes(status, await changelogNotes(tag)) : status
 }
 
 // Checks out the channel target, reinstalls, rebuilds. Returns { ok } | { ok:false, step, code }.
-async function applyUpdate(beta, onLog) {
-  if (installedOnWindows()) return applyInstallerUpdate(onLog)
+async function applyUpdate(beta, onLog, expectedTag) {
+  if (installedOnWindows()) return applyInstallerUpdate(onLog, expectedTag)
   if (!isGitRepo()) return { ok: false, error: 'Open the release to download the update.' }
 
   onLog?.('\n$ git fetch --tags origin main\n')
@@ -187,6 +212,7 @@ async function applyUpdate(beta, onLog) {
     checkout = ['checkout', '-B', 'main', 'origin/main']
   } else {
     const tag = await latestTag()
+    if (expectedTag && expectedTag !== tag) return { ok: false, error: UPDATE_VERSION_CHANGED }
     if (!tag) { onLog?.('\nNo release tag to update to.\n'); return { ok: false, step: 'no release tag', code: -1 } }
     checkout = ['checkout', '--force', tag]
   }

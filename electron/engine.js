@@ -38,6 +38,7 @@ class Engine {
     this._restarts = 0        // bounded auto-restart counter
     this._restartTimer = null
     this._lastRequest = null  // replay after startup or an engine restart
+    this._pendingOptions = new Map()
     this.hashMb = opts.hashMb || defaultHashMb()
     this.threads = opts.threads || Math.max(1, os.cpus().length - 1)
     // Engine settings owned by the desktop app (Engine page). Re-applied on every
@@ -59,6 +60,7 @@ class Engine {
     this._intentional = false
     this.ready = false
     this.multipv = 1
+    this._pendingOptions.clear()
     this.onStatus?.({ status: 'starting', message: 'Stockfish: starting…' })
     const proc = spawn(this._path, [], { windowsHide: true })
     this.proc = proc
@@ -148,6 +150,8 @@ class Engine {
       this._searching = false
       if (this._stopping) {
         this._stopping = false
+        for (const [name, value] of this._pendingOptions) this.setOption(name, value)
+        this._pendingOptions.clear()
         if (this._newGamePending) this._resetGame()
         else if (this._lastRequest) this._search(this._lastRequest)
         return
@@ -218,7 +222,15 @@ class Engine {
     this._send('isready')
   }
 
-  setOption(name, value) { this._send(`setoption name ${name} value ${value}`) }
+  setOption(name, value) {
+    if (this._searching) {
+      // Stockfish waits for the search to finish before handling setoption.
+      this._pendingOptions.set(name, value)
+      this._stopSearch()
+      return
+    }
+    this._send(`setoption name ${name} value ${value}`)
+  }
 
   // Send all app-owned settings to the engine (called on each uciok).
   _applySettings() {
@@ -234,7 +246,7 @@ class Engine {
 
   // Update one app-owned setting; applies live and persists for the next restart.
   applySetting(key, value) {
-    if (!(key in this.settings)) return
+    if (!Object.hasOwn(this.settings, key) || this.settings[key] === value) return
     this.settings[key] = value
     if (key === 'threads') this.threads = value
     if (key === 'hash') this.hashMb = value
@@ -242,10 +254,12 @@ class Engine {
       case 'skillLevel':    this.setOption('Skill Level', value); break
       case 'limitStrength': this.setOption('UCI_LimitStrength', value ? 'true' : 'false')
                             if (value) this.setOption('UCI_Elo', this.settings.elo); break
-      case 'elo':           if (this.settings.limitStrength) this.setOption('UCI_Elo', value); break
+      case 'elo':           if (!this.settings.limitStrength) return
+                            this.setOption('UCI_Elo', value); break
       case 'threads':       this.setOption('Threads', value); break
       case 'hash':          this.setOption('Hash', value); break
     }
+    if (this.ready && !this._searching && this._lastRequest) this._search(this._lastRequest)
   }
 
   stop() {

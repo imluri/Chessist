@@ -165,6 +165,39 @@ button:focus:not(:focus-visible) { outline: none; }
 .update-progress::-webkit-progress-bar { background: rgb(var(--border)); }
 .update-progress::-webkit-progress-value { background: rgb(var(--accent)); }
 
+.update-notes {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--radius-sm);
+  background: rgb(var(--bg));
+  color: rgb(var(--fg-muted));
+  font-size: 13px;
+  line-height: 1.5;
+}
+.update-notes-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 6px;
+}
+.update-notes-heading h2 { color: rgb(var(--fg)); font-size: 13px; font-weight: 650; }
+.update-notes-heading button { text-decoration: underline; }
+.update-notes-body {
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.update-notes-body > * + * { margin-top: 8px; }
+.update-notes-body :is(ul, ol) { padding-inline-start: 20px; }
+.update-notes-body li + li { margin-top: 4px; }
+.update-notes-body :is(h1, h2, h3, h4, h5, h6, strong) { color: rgb(var(--fg)); font-size: inherit; }
+.update-notes-body pre { white-space: pre-wrap; }
+.update-notes-body code { font-size: 0.9em; }
+
 /* Custom slider (.cslider) — flat track (bg set inline) + square accent thumb. */
 input.cslider {
   -webkit-appearance: none;

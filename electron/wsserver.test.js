@@ -7,6 +7,22 @@ function identifyExtension(bridge, data) {
   return socket
 }
 
+it('ignores legacy option writes while passing the search settings from a connected tab', () => {
+  const engine = { evaluate: vi.fn(), setOption: vi.fn() }
+  const bridge = new Bridge(engine, null)
+  const socket = { send: vi.fn() }
+  const fen = '8/8/8/8/8/8/8/K6k w - - 0 1'
+  const receive = message => bridge._onMessage(socket, JSON.stringify(message))
+
+  receive({ type: 'identify', role: 'content', site: 'Lichess' })
+  receive({ type: 'set_option', name: 'Skill Level', value: '20' })
+  receive({ type: 'set_option', name: 'MultiPV', value: '3' })
+  receive({ type: 'evaluate', fen, depth: 16, multiPv: 1 })
+
+  expect(engine.setOption).not.toHaveBeenCalled()
+  expect(engine.evaluate).toHaveBeenCalledWith(fen, 16, 1, false)
+})
+
 describe('browser extension update handshake', () => {
   it('offers the newer bundled version for the browser that connected', () => {
     const onComponent = vi.fn()

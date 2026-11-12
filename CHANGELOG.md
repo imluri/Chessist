@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.1] — 2026-11-12
+
+- Preview the available stable version's release notes in **About → Updates** before installing.
+- Keep sidebar shortcuts and Settings in sync, including when the browser extension reconnects.
+- Keep the desktop app responsive while its window is in the background.
+
 ## [2.1.0] — 2026-11-12
 
 - Use **+ Add shortcuts** in the sidebar to pin Game and Engine settings. Pinned controls stay in sync with Settings and are saved between launches.

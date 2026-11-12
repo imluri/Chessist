@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('chessist', {
   revealFirefoxFolder: () => ipcRenderer.invoke('extension:firefox-reveal'),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
-  applyUpdate: () => ipcRenderer.invoke('update:apply'),
+  applyUpdate: (expectedTag) => ipcRenderer.invoke('update:apply', expectedTag),
   getBeta: () => ipcRenderer.invoke('update:get-beta'),
   setBeta: (beta) => ipcRenderer.invoke('update:set-beta', beta),
   onUpdateLog: (cb) => {

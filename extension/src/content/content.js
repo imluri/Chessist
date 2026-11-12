@@ -25,6 +25,7 @@
   let lastAutoMovePosition = null;  // Track position+turn where we last auto-moved to avoid duplicate moves
   let manualPlayerColor = 'auto';  // 'auto', 'w', or 'b' - manual override for player color
   let boardObserver = null;
+  let boardObservationStarted = false;
   let arrowOverlay = null;  // SVG overlay for best move arrow
   let currentBestMove = null;  // Track current best move to avoid redrawing
 
@@ -1747,7 +1748,7 @@
   let _boardObserver = null;
   let _observedBoard = null;
   let _overlayShown = false; // tracks overlay visibility so we hide it exactly once when the board disappears
-  let _lastEvaluation = null; // cached for immediate redraw on WS reconnect
+  let _lastEvaluation = null;
 
   // A WebSocket-shaped object that tunnels frames through the service worker,
   // which owns the only real socket to the desktop app. Content scripts can't
@@ -1758,6 +1759,7 @@
     const port = chrome.runtime.connect({ name: 'engine' });
     const shim = {
       readyState: 0,
+      settingsReady: false,
       onopen: null, onmessage: null, onclose: null, onerror: null,
       send(data) { try { port.postMessage({ kind: 'frame', data }); } catch (e) {} },
       close() { try { port.disconnect(); } catch (e) {} _fail(); },
@@ -1776,34 +1778,28 @@
   function _connectEngineWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
     try {
-      _overlayWs = _engineSocket();
-      _overlayWs.onopen  = () => {
-        try { _overlayWs.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Chess.com' })); } catch (e) {}
+      const socket = _engineSocket();
+      _overlayWs = socket;
+      socket.onopen = () => {
+        if (_overlayWs !== socket) return;
+        try { socket.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Chess.com' })); } catch (e) {}
         _launchTriggered = false;
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
         // Board may not be in DOM yet on page load — poll until ready
         if (!findBoard()) {
           const _initPoll = setInterval(() => {
-            if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
+            if (_overlayWs !== socket || socket.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
             if (findBoard()) { sendPositionUpdate(); clearInterval(_initPoll); }
           }, 200);
         }
-        if (_lastEvaluation) updateEval(_lastEvaluation); // immediate redraw with cached data
-        if (currentFen) requestEval(currentFen); // always request fresh after (re)connect
-        // Sync current settings to engine on connect
-        chrome.storage.sync.get(['skillLevel', 'showAltArrows']).then(s => {
-          if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-          const level = parseInt(s.skillLevel) || 20;
-          _overlayWs.send(JSON.stringify({ type: 'set_option', name: 'Skill Level', value: String(level) }));
-          const mpv = s.showAltArrows ? '3' : '1';
-          _overlayWs.send(JSON.stringify({ type: 'set_option', name: 'MultiPV', value: mpv }));
-        }).catch(() => {});
       };
-      _overlayWs.onmessage = (e) => {
+      socket.onmessage = (e) => {
+        if (_overlayWs !== socket) return;
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'eval' && msg.data) {
+            if (!socket.settingsReady) return;
             const d = msg.data;
             const key = _fenKey(d.fen);
             const curKey = _fenKey(currentFen);
@@ -1832,15 +1828,18 @@
           } else if (msg.type === 'engine_status') {
             chrome.runtime.sendMessage({ type: 'ENGINE_STATUS', status: msg.status, message: msg.message }).catch(() => {});
           } else if (msg.type === 'settings' && msg.data) {
-            applyPushedSettings(msg.data);
+            const initial = !socket.settingsReady;
+            socket.settingsReady = true;
+            applyPushedSettings(msg.data, initial);
           }
         } catch (ignore) {}
       };
-      _overlayWs.onclose = () => {
+      socket.onclose = () => {
+        if (_overlayWs !== socket) return;
         _overlayWs = null;
         _overlayReconnectTimer = setTimeout(_connectEngineWs, 3000);
       };
-      _overlayWs.onerror = () => {}; // onclose fires next
+      socket.onerror = () => {}; // onclose fires next
     } catch (e) {}
   }
 
@@ -2474,6 +2473,7 @@
   // Request evaluation from background script
   async function requestEval(fen, isMouseRelease = false) {
     if (!isEnabled || !fen) return;
+    if (_overlayWs?.readyState === WebSocket.OPEN && !_overlayWs.settingsReady) return;
 
     // Check if extension context is still valid
     if (!extensionContextValid || !checkExtensionContext()) {
@@ -2895,8 +2895,12 @@
     // The desktop app is the only engine now — always connect so we can request
     // evals, identify to the app, and receive pushed settings (regardless of mode/enabled).
     _connectEngineWs();
+    await startBoardObservation();
+  }
 
-    if (!isEnabled) return;
+  async function startBoardObservation() {
+    if (!isEnabled || boardObservationStarted) return;
+    boardObservationStarted = true;
 
     await restoreAccuracyState();
 
@@ -3042,8 +3046,17 @@
 
   // Apply settings pushed by the desktop app over the engine WebSocket.
   // Mirrors the SETTINGS_UPDATED runtime re-apply logic and the enable toggle.
-  function applyPushedSettings(data) {
+  function applyPushedSettings(data, initial = false) {
     if (!data) return;
+    const wasEnabled = isEnabled;
+    const hadAutoMove = autoMove;
+    const depthChanged = data.depth !== undefined && data.depth !== targetDepth;
+    const alternativesChanged = data.showAltArrows !== undefined && data.showAltArrows !== showAltArrows;
+    const displayChanged =
+      (data.showBestMove !== undefined && data.showBestMove !== showBestMove) ||
+      (data.showOpponentBestMove !== undefined && data.showOpponentBestMove !== showOpponentBestMove) ||
+      (data.playerColor !== undefined && normalizePlayerColor(data.playerColor) !== manualPlayerColor) ||
+      (data.renderMode !== undefined && data.renderMode !== (overlayMode ? 'overlay' : suppressInPage ? 'electron' : 'browser'));
     if (data.enabled !== undefined) {
       isEnabled = data.enabled;
       if (overlayMode) {
@@ -3067,7 +3080,7 @@
       showOpponentBestMove = data.showOpponentBestMove;
       if (!showOpponentBestMove) clearArrow();
     }
-    if (data.showAltArrows !== undefined) {
+    if (alternativesChanged) {
       showAltArrows = data.showAltArrows;
       clearArrow();
     }
@@ -3095,10 +3108,6 @@
     }
     if (data.depth !== undefined) {
       targetDepth = data.depth;
-      if (currentFen && isEnabled) {
-        evalBar?.classList.add('loading');
-        requestEval(currentFen);
-      }
     }
     if (data.renderMode !== undefined) {
       const mode = data.renderMode; // 'overlay' | 'browser' | 'electron'
@@ -3135,6 +3144,15 @@
     if (data.lossRandom !== undefined) lossRandom = data.lossRandom;
     if (data.targetAccuracy !== undefined) targetAccuracy = data.targetAccuracy;
     if (data.enabled !== undefined || data.autoMove !== undefined) updateFairPlayNotice();
+    if (initial || depthChanged || alternativesChanged) {
+      _pvQuickCache = null;
+      _preWarmCache = null;
+    }
+    if (isEnabled && !wasEnabled) startBoardObservation().catch(() => {});
+    if (currentFen && isEnabled && (initial || depthChanged || alternativesChanged || displayChanged || !wasEnabled || (!hadAutoMove && autoMove))) {
+      evalBar?.classList.add('loading');
+      requestEval(currentFen);
+    }
   }
 
   // Listen for messages from popup/background
@@ -3146,6 +3164,7 @@
         if (message.type === 'TOGGLE_ENABLED') {
           isEnabled = message.enabled;
           updateFairPlayNotice();
+          if (isEnabled) startBoardObservation().catch(() => {});
           if (overlayMode) {
             if (!isEnabled) {
               if (_overlayWs && _overlayWs.readyState === WebSocket.OPEN)

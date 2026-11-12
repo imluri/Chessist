@@ -64,11 +64,17 @@ function settingsPath() { return path.join(app.getPath('userData'), 'chessist-se
 function loadAll() {
   try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) || {} } catch { return {} }
 }
-function saveAll() {
+function saveAll({ engine: engineSettings = engine?.getSettings() ?? {}, game = gameSettings } = {}) {
+  const file = settingsPath()
+  const temp = file + '.tmp'
   try {
-    fs.writeFileSync(settingsPath(), JSON.stringify({ engine: engine?.getSettings() ?? {}, game: gameSettings, app: appPrefs }, null, 2))
+    fs.writeFileSync(temp, JSON.stringify({ engine: engineSettings, game, app: appPrefs }, null, 2))
+    fs.renameSync(temp, file)
     return true
-  } catch { return false }
+  } catch {
+    try { fs.rmSync(temp, { force: true }) } catch {}
+    return false
+  }
 }
 
 const componentStatus = {
@@ -108,6 +114,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false, contextIsolation: true, sandbox: false,
+      backgroundThrottling: false,
     },
   })
   if (isDev) {
@@ -176,14 +183,17 @@ function registerIpc() {
   ipcMain.handle('status:get', () => componentStatus)
   ipcMain.handle('engine:get', () => engine?.getSettings() ?? {})
   ipcMain.handle('engine:set', (_e, { key, value }) => {
-    engine?.applySetting(key, value)
-    saveAll()
-    return engine?.getSettings() ?? {}
+    const current = engine?.getSettings()
+    if (!current || !Object.hasOwn(current, key)) throw new Error('Unknown engine setting.')
+    if (!saveAll({ engine: { ...current, [key]: value } })) throw new Error('Could not save engine settings.')
+    engine.applySetting(key, value)
+    return engine.getSettings()
   })
   ipcMain.handle('game:get', () => gameSettings)
   ipcMain.handle('game:set', (_e, { key, value }) => {
-    if (key in gameSettings) gameSettings[key] = value
-    saveAll()
+    if (!Object.hasOwn(gameSettings, key)) throw new Error('Unknown game setting.')
+    if (!saveAll({ game: { ...gameSettings, [key]: value } })) throw new Error('Could not save game settings.')
+    gameSettings[key] = value
     bridge?.broadcastSettings(gameSettings)
     return gameSettings
   })
@@ -199,12 +209,12 @@ function registerIpc() {
   ipcMain.handle('update:get-beta', () => appPrefs.betaUpdates)
   ipcMain.handle('update:set-beta', (_e, beta) => { appPrefs.betaUpdates = !!beta; saveAll(); return appPrefs.betaUpdates })
   ipcMain.handle('update:check', () => updater.checkForUpdate(appPrefs.betaUpdates))
-  ipcMain.handle('update:apply', async () => {
+  ipcMain.handle('update:apply', async (_event, expectedTag) => {
     if (updateInProgress) return { ok: false, error: 'An update is already in progress.' }
     updateInProgress = true
     let result
     try {
-      result = await updater.applyUpdate(appPrefs.betaUpdates, (line) => sendToRenderer('update:log', line))
+      result = await updater.applyUpdate(appPrefs.betaUpdates, (line) => sendToRenderer('update:log', line), expectedTag)
       if (result.installer) setImmediate(() => app.quit())
       else if (result.ok) setTimeout(() => { app.relaunch(); app.exit(0) }, 1000)
       return result

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import Markdown from 'react-markdown'
 import logo from '../assets/logo.png'
 import Check from '../components/controls/Check'
 
-const VERSION = '2.1.0'
+const VERSION = '2.1.1'
 // Baked at build time when git is available (see vite.config.js). Empty for source-ZIP builds.
 const BUILD_SHA = (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '')
 const RELEASES_URL = 'https://github.com/imluri/Chessist/releases'
@@ -23,6 +24,26 @@ const btn = {
   background: 'rgb(var(--accent))', color: '#fff', border: 'none', cursor: 'pointer',
 }
 const btnGhost = { ...btn, background: 'rgb(var(--surface))', color: 'rgb(var(--fg))', border: '1px solid rgb(var(--border))' }
+
+// Release notes are remote content. Keep inline link labels and use the
+// separately constructed GitHub release URL for navigation.
+const releaseNoteComponents = { a: ({ children }) => <span>{children}</span> }
+
+function ReleaseNotes({ tag, notes, releaseUrl, showLink }) {
+  return (
+    <section className="update-notes" aria-labelledby="update-notes-heading">
+      <div className="update-notes-heading">
+        <h2 id="update-notes-heading">What’s new in {tag}</h2>
+        {showLink && <Link href={releaseUrl}>View on GitHub</Link>}
+      </div>
+      {notes ? (
+        <div className="update-notes-body" role="region" aria-labelledby="update-notes-heading" tabIndex={0}>
+          <Markdown skipHtml disallowedElements={['img']} components={releaseNoteComponents}>{notes}</Markdown>
+        </div>
+      ) : <p>No release notes available.</p>}
+    </section>
+  )
+}
 
 function Updates({ status, onChange }) {
   const [busy, setBusy] = useState(false)   // checking
@@ -63,7 +84,7 @@ function Updates({ status, onChange }) {
     setLog('')
     setDownloadProgress(0)
     try {
-      const result = await window.chessist.applyUpdate()
+      const result = await window.chessist.applyUpdate(status?.channel === 'stable' ? status.tag : undefined)
       if (!result.ok) {
         setApplyError(result.error || result.message || (result.step
           ? `Update failed at ${result.step}.`
@@ -110,6 +131,7 @@ function Updates({ status, onChange }) {
   const head = status?.head || BUILD_SHA
   const canApply = status?.available && !status.manual && (!status.installer || status.canApply)
   const releaseUrl = status?.tag ? `${RELEASES_URL}/tag/${encodeURIComponent(status.tag)}` : RELEASES_URL
+  const showReleaseNotes = status?.channel === 'stable' && status.available && status.tag
   const installerStatus = applying && status?.installer ? log.trim() : null
 
   return (
@@ -129,6 +151,11 @@ function Updates({ status, onChange }) {
         <div role="status" style={{ fontSize: 12, color: applyError ? 'rgb(var(--status-red))' : color, marginBottom: 12 }}>
           {applyError || (applying ? installerStatus || 'Updating…' : line)}
         </div>
+      )}
+
+      {showReleaseNotes && (
+        <ReleaseNotes tag={status.tag} notes={status.releaseNotes} releaseUrl={releaseUrl}
+          showLink={!manualUpdate && !(applyError && status.installer)} />
       )}
 
       {status && !status.installer && (

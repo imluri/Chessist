@@ -1067,6 +1067,7 @@
     const port = chrome.runtime.connect({ name: 'engine' });
     const shim = {
       readyState: 0,
+      settingsReady: false,
       onopen: null, onmessage: null, onclose: null, onerror: null,
       send(data) { try { port.postMessage({ kind: 'frame', data }); } catch (e) {} },
       close() { try { port.disconnect(); } catch (e) {} _fail(); },
@@ -1085,33 +1086,28 @@
   function _connectEngineWs() {
     if (_overlayWs && _overlayWs.readyState <= WebSocket.OPEN) return;
     try {
-      _overlayWs = _engineSocket();
-      _overlayWs.onopen  = () => {
-        try { _overlayWs.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Lichess' })); } catch (e) {}
+      const socket = _engineSocket();
+      _overlayWs = socket;
+      socket.onopen = () => {
+        if (_overlayWs !== socket) return;
+        try { socket.send(JSON.stringify({ type: 'identify', role: 'content', site: 'Lichess' })); } catch (e) {}
         reportAutoMove('connected', { ownGame: isInOwnGame(), position: _fenKey(currentFen) });
         clearTimeout(_overlayReconnectTimer); _overlayReconnectTimer = null;
         sendPositionUpdate();
         // Board may not be in DOM yet on page load — poll until ready
         if (!findBoard()) {
           const _initPoll = setInterval(() => {
-            if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
+            if (_overlayWs !== socket || socket.readyState !== WebSocket.OPEN) { clearInterval(_initPoll); return; }
             if (findBoard()) { sendPositionUpdate(); clearInterval(_initPoll); }
           }, 200);
         }
-        if (currentFen) requestEval(currentFen); // always request fresh after (re)connect
-        // Sync current settings to engine on connect
-        chrome.storage.sync.get(['skillLevel', 'showAltArrows']).then(s => {
-          if (!_overlayWs || _overlayWs.readyState !== WebSocket.OPEN) return;
-          const level = parseInt(s.skillLevel) || 20;
-          _overlayWs.send(JSON.stringify({ type: 'set_option', name: 'Skill Level', value: String(level) }));
-          const mpv = String(analysisMultiPv());
-          _overlayWs.send(JSON.stringify({ type: 'set_option', name: 'MultiPV', value: mpv }));
-        }).catch(() => {});
       };
-      _overlayWs.onmessage = (e) => {
+      socket.onmessage = (e) => {
+        if (_overlayWs !== socket) return;
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'eval' && msg.data) {
+            if (!socket.settingsReady) return;
             const d = msg.data;
             const key = _fenKey(d.fen);
             const curKey = _fenKey(currentFen);
@@ -1134,18 +1130,21 @@
               setTimeout(() => requestEval(currentFen), 20);
             }
           } else if (msg.type === 'settings' && msg.data) {
-            applyPushedSettings(msg.data);
+            const initial = !socket.settingsReady;
+            socket.settingsReady = true;
+            applyPushedSettings(msg.data, initial);
           }
         } catch (ignore) {}
       };
-      _overlayWs.onclose = () => {
+      socket.onclose = () => {
+        if (_overlayWs !== socket) return;
         clearTimeout(evalWatchdogTimer);
         evalWatchdogTimer = null;
         evalWatchdogKey = null;
         _overlayWs = null;
         _overlayReconnectTimer = setTimeout(_connectEngineWs, 300);
       };
-      _overlayWs.onerror = () => {};
+      socket.onerror = () => {};
     } catch (e) {}
   }
 
@@ -1590,6 +1589,7 @@
     // the visible game tab (the desktop app owns one shared engine process).
     if (document.hidden) return;
     if (!extensionContextValid || !checkExtensionContext()) { showRefreshMessage(); return; }
+    if (_overlayWs?.readyState === WebSocket.OPEN && !_overlayWs.settingsReady) return;
 
     log('Chessist: Requesting eval for FEN:', fen, isMouseRelease ? '(mouse release)' : '');
 
@@ -2101,10 +2101,17 @@
 
   // Apply settings pushed by the desktop app over the engine WebSocket.
   // Mirrors the SETTINGS_UPDATED runtime re-apply logic and the enable toggle.
-  function applyPushedSettings(data) {
+  function applyPushedSettings(data, initial = false) {
     if (!data) return;
     const wasEnabled = isEnabled;
     const hadAutoMove = autoMove;
+    const depthChanged = data.depth !== undefined && data.depth !== targetDepth;
+    const alternativesChanged = data.showAltArrows !== undefined && data.showAltArrows !== showAltArrows;
+    const displayChanged =
+      (data.showBestMove !== undefined && data.showBestMove !== showBestMove) ||
+      (data.showOpponentBestMove !== undefined && data.showOpponentBestMove !== showOpponentBestMove) ||
+      (data.playerColor !== undefined && normalizePlayerColor(data.playerColor) !== manualPlayerColor) ||
+      (data.renderMode !== undefined && data.renderMode !== (overlayMode ? 'overlay' : suppressInPage ? 'electron' : 'browser'));
     if (data.enabled !== undefined) {
       isEnabled = data.enabled;
       if (!isEnabled) clearPendingAutoMove();
@@ -2128,7 +2135,7 @@
       showOpponentBestMove = data.showOpponentBestMove;
       if (!showOpponentBestMove) clearArrow();
     }
-    if (data.showAltArrows !== undefined) {
+    if (alternativesChanged) {
       showAltArrows = data.showAltArrows;
       clearArrow();
     }
@@ -2183,7 +2190,11 @@
     if (data.throwRandom !== undefined) throwRandom = data.throwRandom;
     if (data.lossRandom !== undefined) lossRandom = data.lossRandom;
     if (data.targetAccuracy !== undefined) targetAccuracy = data.targetAccuracy;
-    if (currentFen && isEnabled && (data.depth !== undefined || !wasEnabled || (!hadAutoMove && autoMove))) {
+    if (initial || depthChanged || alternativesChanged) {
+      _pvQuickCache = null;
+      _preWarmCache = null;
+    }
+    if (currentFen && isEnabled && (initial || depthChanged || alternativesChanged || displayChanged || !wasEnabled || (!hadAutoMove && autoMove))) {
       evalBar?.classList.add('loading');
       requestEval(currentFen);
     }
