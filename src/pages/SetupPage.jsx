@@ -167,8 +167,11 @@ function ExtensionModule({ status }) {
 
 export default function SetupPage({ status }) {
   return (
-    <div style={{ padding: 16 }}>
-      <div style={{ fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', marginBottom: 12, color: 'rgb(var(--fg-muted))' }}>SETUP</div>
+    <div className="page-content">
+      <header className="page-heading">
+        <h1>Setup</h1>
+        <p>Manage Stockfish, the overlay, and your browser extension.</p>
+      </header>
       <StockfishModule status={status} />
       <OverlayModule status={status} />
       <ExtensionModule status={status} />

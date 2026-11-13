@@ -1,22 +1,44 @@
 import { useEffect, useState, useRef } from 'react'
-import TitleBar from './components/TitleBar'
-import Sidebar from './components/Sidebar'
-import SettingsModal from './components/SettingsModal'
+import DesktopShell from '../ui-template/src/DesktopShell'
+import { Icon } from '../ui-template/src/icons'
+import logo from './assets/logo.png'
+import SidebarShortcuts from './components/Sidebar'
+import { IconEval, IconSetup } from './components/icons'
+import ChessistSettings from './components/ChessistSettings'
 import EvaluationPage from './pages/EvaluationPage'
 import SetupPage from './pages/SetupPage'
 import AboutPage from './pages/AboutPage'
 
 const piecesKey = (fen) => (fen ? fen.split(' ')[0] : '')
+const brand = {
+  name: 'Chessist',
+  caption: 'Desktop analysis',
+  mark: <img className="chessist-brand-logo" src={logo} alt="" />,
+}
+const navigation = [
+  { id: 'evaluation', label: 'Evaluation', icon: <IconEval aria-hidden="true" /> },
+  { id: 'setup', label: 'Setup', icon: <IconSetup aria-hidden="true" /> },
+  { id: 'about', label: 'About', icon: <Icon name="info" /> },
+  { id: 'settings', label: 'Settings', icon: <Icon name="settings" /> },
+]
+
+const windowControls = {
+  minimize: () => window.chessist.minimizeWindow(),
+  toggleMaximize: () => window.chessist.maximizeWindow(),
+  close: () => window.chessist.closeWindow(),
+  isMaximized: () => window.chessist.isWindowMaximized(),
+  onMaximizedChange: callback => window.chessist.onWindowMaximizedChange(callback),
+}
 
 export default function App() {
   const [status, setStatus] = useState({ stockfishOk: false, stockfishState: 'starting', overlayOk: false, extensionConnected: false, extensionUpdateAvailable: false, chessConnected: false, chessSite: null, message: '' })
   const [ev, setEv] = useState(null)
   const [pos, setPos] = useState(null)        // { fen, flipped } — authoritative current position
   const [page, setPage] = useState('evaluation')
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [updateStatus, setUpdateStatus] = useState(null)
   const [settings, setSettings] = useState({ game: null, engine: null })
   const [settingsError, setSettingsError] = useState('')
+  const [settingsLoadError, setSettingsLoadError] = useState('')
   const [shortcutIds, setShortcutIds] = useState(null)
   const [shortcutError, setShortcutError] = useState('')
   const settingWrites = useRef(new Map())
@@ -27,7 +49,9 @@ export default function App() {
     const api = window.chessist
     const load = (scope, read) => read().then(values => {
       if (mounted) setSettings(previous => ({ ...previous, [scope]: values }))
-    }).catch(() => {})
+    }).catch(() => {
+      if (mounted) setSettingsLoadError('Could not load some settings. Restart Chessist to try again.')
+    })
     load('game', api.getGameSettings)
     load('engine', api.getEngineSettings)
     api.getSidebarShortcuts().then(ids => {
@@ -99,44 +123,39 @@ export default function App() {
   }, [])
 
   const updateAvailable = !!updateStatus?.available
+  const engineReady = status.stockfishOk && status.extensionConnected
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'rgb(var(--bg))' }}>
-      <TitleBar onSettings={() => setSettingsOpen(true)} />
-      {updateAvailable && page !== 'about' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', background: 'rgb(var(--surface))', borderBottom: '1px solid rgb(var(--border))', fontSize: 12 }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'rgb(var(--status-yellow))', flexShrink: 0 }} />
-          <span style={{ flex: 1, color: 'rgb(var(--fg-muted))' }}>A new version is available.</span>
-          <button onClick={() => setPage('about')}
-            style={{ padding: '5px 10px', fontSize: 12, fontWeight: 600, borderRadius: 'var(--radius-sm)', background: 'rgb(var(--accent))', color: '#fff', border: 'none', cursor: 'pointer' }}>
-            View update
-          </button>
+    <DesktopShell brand={brand} items={navigation} page={page} onNavigate={setPage} windowControls={windowControls}
+      sidebarTools={<SidebarShortcuts settings={settings} shortcutIds={shortcutIds} shortcutError={shortcutError}
+        onSettingChange={changeSetting} onShortcutsChange={changeShortcuts} />}
+      sidebarFooter={<div className="workspace">
+        <span className="workspace-avatar chessist-connection" data-ready={engineReady} aria-hidden="true"><span /></span>
+        <div className="workspace-copy">
+          <strong>{engineReady ? 'Ready' : 'Setup'}</strong>
+          <span>{status.extensionConnected ? 'Extension connected' : 'Extension disconnected'}</span>
         </div>
-      )}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <Sidebar page={page} setPage={setPage} status={status} onSettings={() => setSettingsOpen(true)}
-          settings={settings} shortcutIds={shortcutIds} shortcutError={shortcutError}
-          onSettingChange={changeSetting} onShortcutsChange={changeShortcuts} />
-        <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {status.message && page !== 'setup' && (
-            <div style={{ flexShrink: 0, padding: '6px 16px', fontSize: 11, color: 'rgb(var(--fg-muted))', fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid rgb(var(--border))' }}>
-              {status.message}
-            </div>
-          )}
-          <div style={{ flex: 1, minHeight: 0, overflowY: page === 'evaluation' ? 'hidden' : 'auto' }}>
-            {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} gameSettings={settings.game}
-              onOpenSetup={() => setPage('setup')} />}
-            {page === 'setup' && <SetupPage status={status} />}
-            <div hidden={page !== 'about'}>
-              <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />
-            </div>
-          </div>
-        </main>
+      </div>}
+      banner={<>
+        {updateAvailable && page !== 'about' && <div className="chessist-banner">
+          <span>A new version is available.</span>
+          <button type="button" className="button button-primary" onClick={() => setPage('about')}>View update</button>
+        </div>}
+        {status.message && page !== 'setup' && <div className="chessist-banner chessist-banner--status">{status.message}</div>}
+      </>}
+    >
+      <div key={page} className={page === 'evaluation' ? 'chessist-evaluation' : undefined}>
+        {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} gameSettings={settings.game}
+          onOpenSetup={() => setPage('setup')} />}
+        {page === 'setup' && <SetupPage status={status} />}
+        {page === 'settings' && <ChessistSettings gameSettings={settings.game} engineSettings={settings.engine}
+          onGameChange={(key, value) => changeSetting('game', key, value)}
+          onEngineChange={(key, value) => changeSetting('engine', key, value)}
+          loadError={settingsLoadError} />}
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)}
-        gameSettings={settings.game} engineSettings={settings.engine}
-        onGameChange={(key, value) => changeSetting('game', key, value)}
-        onEngineChange={(key, value) => changeSetting('engine', key, value)} />}
+      <div hidden={page !== 'about'}>
+        <AboutPage updateStatus={updateStatus} onUpdateStatus={setUpdateStatus} />
+      </div>
       {settingsError && (
         <div role="alert" style={{
           position: 'fixed', right: 16, bottom: 16, zIndex: 1001, padding: '8px 12px', fontSize: 12,
@@ -146,6 +165,6 @@ export default function App() {
           {settingsError}
         </div>
       )}
-    </div>
+    </DesktopShell>
   )
 }

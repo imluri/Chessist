@@ -29,6 +29,12 @@ contextBridge.exposeInMainWorld('chessist', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   closeWindow: () => ipcRenderer.send('window:close'),
+  isWindowMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onWindowMaximizedChange: (cb) => {
+    const listener = (_event, maximized) => cb(maximized)
+    ipcRenderer.on('window:maximized-change', listener)
+    return () => ipcRenderer.removeListener('window:maximized-change', listener)
+  },
   toggleDevTools: () => ipcRenderer.invoke('app:toggle-devtools'),
   onStatus: (cb) => {
     const h = (_e, payload) => cb(payload)

@@ -1,14 +1,23 @@
-:root, [data-theme='purple'] {
+:root {
   --bg: 0 0 0;
   --surface: 17 17 17;
   --border: 31 31 31;
-  --fg: 255 255 255;
-  --fg-muted: 150 150 150;
-  --fg-dim: 120 120 120;
-  --accent: 121 42 158;
+  --fg: 238 242 249;
+  --fg-muted: 173 183 200;
+  --fg-dim: 155 166 184;
+  --accent: 124 78 184;
+  --accent-rgb: 124, 78, 184;
   --status-green: 34 197 94;
   --status-yellow: 234 179 8;
-  --status-red: 239 68 68;
-  --radius: 10px;       /* cards, modal, board */
-  --radius-sm: 6px;     /* buttons, inputs, segmented controls */
+  --status-red: 248 113 113;
+  --radius: 16px;
+  --radius-sm: 9px;
+}
+
+:root[data-theme='dark'] {
+  --ui-canvas: rgb(var(--bg));
+  --ui-surface: rgb(var(--surface));
+  --ui-soft: #181818;
+  --ui-border: rgb(var(--border));
+  --ui-control-border: #484848;
 }

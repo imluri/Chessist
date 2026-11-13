@@ -1,15 +1,15 @@
 {
   "name": "chessist",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n VITE,ELECTRON -c green,magenta \"vite\" \"wait-on tcp:5173 && electron .\"",
     "vite": "vite",
     "electron": "electron .",
-    "build": "vite build",
-    "dist": "vite build && npm run build:firefox && electron-builder",
-    "pack": "vite build && npm run build:firefox && electron-builder --dir",
+    "build": "bun scripts/build-renderer.mjs",
+    "dist": "npm run build && npm run build:firefox && electron-builder",
+    "pack": "npm run build && npm run build:firefox && electron-builder --dir",
     "build:overlay": "powershell -ExecutionPolicy Bypass -File scripts/build-overlay.ps1",
     "build:firefox": "node scripts/build-firefox-ext.mjs",
     "test": "vitest run"
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "bun": "1.4.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",

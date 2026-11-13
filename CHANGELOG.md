@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.0.0] — 2026-11-14
+
+- Introduce a redesigned title bar, sidebar, and Settings panel built on the reusable desktop UI template.
+- Use existing Chessist preferences for Game and Engine controls in the new Settings panel.
+- Build the desktop renderer with Bun.
+
 ## [2.1.1] — 2026-11-12
 
 - Preview the available stable version's release notes in **About → Updates** before installing.

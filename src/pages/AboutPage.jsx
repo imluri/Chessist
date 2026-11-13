@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
-import logo from '../assets/logo.png'
 import Check from '../components/controls/Check'
 
-const VERSION = '2.1.1'
+const VERSION = '3.0.0'
 // Baked at build time when git is available (see vite.config.js). Empty for source-ZIP builds.
 const BUILD_SHA = (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '')
 const RELEASES_URL = 'https://github.com/imluri/Chessist/releases'
@@ -193,14 +192,11 @@ function Updates({ status, onChange }) {
 
 export default function AboutPage({ updateStatus, onUpdateStatus }) {
   return (
-    <div style={{ padding: 16, fontSize: 13, lineHeight: 1.9 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: '0 8px' }}>
-        <img src={logo} alt="" width={40} height={40} style={{ display: 'block', borderRadius: 8 }} />
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '0.08em' }}>CHESSIST</span>
-          <span style={{ fontVariantNumeric: 'tabular-nums', color: 'rgb(var(--fg-muted))' }}>v{VERSION}</span>
-        </div>
-      </div>
+    <div className="page-content" style={{ lineHeight: 1.65 }}>
+      <header className="page-heading">
+        <h1>About</h1>
+        <p>Chessist v{VERSION}</p>
+      </header>
       <p style={{ color: 'rgb(var(--fg-muted))', margin: '0 8px 14px' }}>
         Live Stockfish evaluation for Chess.com and Lichess — a desktop app with a transparent,
         screen-capture-invisible board overlay.

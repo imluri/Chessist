@@ -1,0 +1,33 @@
+.desktop-shell .title-bar,
+.desktop-shell .sidebar { background: var(--ui-canvas); }
+.desktop-shell .title-brand .brand-mark { background: transparent; }
+.chessist-brand-logo { width: 32px; height: 32px; object-fit: contain; }
+.desktop-shell .sidebar .icon-cutout { fill: var(--ui-canvas); }
+.desktop-shell .sidebar .nav-item[aria-current='page'] .icon-cutout { fill: var(--ui-accent-soft); }
+.desktop-shell .sidebar { gap: 6px; }
+.desktop-shell .sidebar nav { padding-bottom: 7px; }
+.desktop-shell .sidebar-add-shortcut { margin-inline: 13px; }
+.desktop-shell .sidebar-shortcuts { padding-inline: 13px; }
+.desktop-shell .sidebar-shortcut { background: var(--ui-soft); }
+.desktop-shell .sidebar-footer { padding-block: 13px; }
+.chessist-connection > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgb(var(--status-yellow));
+}
+.chessist-connection[data-ready="true"] > span { background: rgb(var(--status-green)); }
+.chessist-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 7px 20px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.chessist-banner--status { font-size: 12px; }
+.chessist-evaluation { height: 100%; }

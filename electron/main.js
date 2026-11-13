@@ -107,7 +107,7 @@ function updateStockfishStatus({ status, message }) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900, height: 600, minWidth: 720, minHeight: 480,
+    width: 1040, height: 720, minWidth: 720, minHeight: 480,
     title: 'Chessist', backgroundColor: '#000000',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     frame: false, titleBarStyle: 'hidden', autoHideMenuBar: true,
@@ -124,6 +124,8 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
   mainWindow.webContents.on('did-finish-load', () => pushStatus({}))
+  mainWindow.on('maximize', () => sendToRenderer('window:maximized-change', true))
+  mainWindow.on('unmaximize', () => sendToRenderer('window:maximized-change', false))
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
@@ -174,6 +176,7 @@ function prepareStockfish(redownload = false) {
 }
 
 function registerIpc() {
+  ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
   ipcMain.on('window:minimize', () => mainWindow?.minimize())
   ipcMain.on('window:maximize', () => {
     if (!mainWindow) return

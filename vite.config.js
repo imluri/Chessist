@@ -12,6 +12,7 @@ function gitShortSha() {
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { dedupe: ['react', 'react-dom'] },
   base: './',
   define: {
     __BUILD_SHA__: JSON.stringify(gitShortSha()),

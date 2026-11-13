@@ -1,15 +1,22 @@
-// Renders a chess position from FEN with best-move arrows. White's perspective.
-// Uses image assets from src/assets if present, otherwise falls back to glyphs/CSS squares.
+import BOARD_IMG from '../assets/board/1.png'
+import bb from '../assets/pieces/bb.png'
+import bk from '../assets/pieces/bk.png'
+import bn from '../assets/pieces/bn.png'
+import bp from '../assets/pieces/bp.png'
+import bq from '../assets/pieces/bq.png'
+import br from '../assets/pieces/br.png'
+import wb from '../assets/pieces/wb.png'
+import wk from '../assets/pieces/wk.png'
+import wn from '../assets/pieces/wn.png'
+import wp from '../assets/pieces/wp.png'
+import wq from '../assets/pieces/wq.png'
+import wr from '../assets/pieces/wr.png'
+
+// Renders a chess position from FEN with best-move arrows.
 const GLYPH = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚' }
 const ARROW_COLORS = ['rgb(var(--accent))', 'rgb(var(--status-yellow))', 'rgb(var(--status-red))']
 
-// Piece images keyed by e.g. "wr", "bk" (filename without extension).
-const PIECE_IMGS = Object.fromEntries(
-  Object.entries(import.meta.glob('../assets/pieces/*.png', { eager: true, import: 'default' }))
-    .map(([path, url]) => [path.split('/').pop().replace('.png', '').toLowerCase(), url])
-)
-// First board image found in src/assets/board (e.g. board.png), or null.
-const BOARD_IMG = Object.values(import.meta.glob('../assets/board/*.png', { eager: true, import: 'default' }))[0] || null
+const PIECE_IMGS = { bb, bk, bn, bp, bq, br, wb, wk, wn, wp, wq, wr }
 
 function parseFen(fen) {
   const rows = (fen || '').split(' ')[0].split('/')

@@ -1,0 +1,65 @@
+.chessist-settings .setting-field--radio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  padding: 8px 0;
+}
+
+.chessist-settings .setting-field--radio .setting-copy {
+  margin-bottom: 0;
+}
+
+.chessist-settings .setting-field--radio .setting-control {
+  width: auto;
+}
+
+.chessist-settings .setting-radio-options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.chessist-settings .setting-radio-option {
+  padding: 6px 8px;
+}
+
+.chessist-settings .setting-field--radio .setting-radio-input {
+  width: 13px;
+  height: 13px;
+}
+
+.chessist-settings .setting-field:has(input:disabled) {
+  opacity: .65;
+}
+
+.chessist-settings .setting-field:has(input:disabled) label,
+.chessist-settings .setting-field input:disabled {
+  cursor: default;
+}
+
+.chessist-developer-actions {
+  padding: 4px 19px 16px;
+}
+
+.chessist-developer-actions .setting-description {
+  margin-top: 8px;
+}
+
+.chessist-settings-loading {
+  color: var(--ui-muted);
+}
+
+@media (max-width: 760px) {
+  .chessist-settings .setting-field--radio {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+
+  .chessist-settings .setting-field--radio .setting-control {
+    justify-self: start;
+  }
+
+  .chessist-settings .setting-radio-options {
+    justify-content: flex-start;
+  }
+}

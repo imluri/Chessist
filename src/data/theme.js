@@ -1,4 +1,4 @@
-export function applyTheme(name = 'purple') {
-  document.documentElement.setAttribute('data-theme', name)
-  document.documentElement.style.colorScheme = 'dark'
+export function applyTheme(accent = 'violet') {
+  document.documentElement.dataset.theme = 'dark'
+  document.documentElement.dataset.accent = accent
 }

@@ -1,0 +1,20 @@
+{
+  "name": "desktop-ui-template",
+  "version": "3.0.0",
+  "private": true,
+  "main": "electron/main.cjs",
+  "packageManager": "bun@1.4.4",
+  "scripts": {
+    "dev": "bun ./index.html",
+    "build": "bun build ./index.html --target=browser --production --outdir=dist",
+    "desktop": "bun run build && electron .",
+    "preview:html": "bun build ./index.html --compile --target=browser --production --outdir=dist/preview"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "electron": "45.3.2"
+  }
+}
