@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.4] — 2026-11-14
+
+- Fix a Lichess Instant move race where the mouse could release before the board registered the drag. Chessist waits for the piece to reach the destination and reports an input error if the drag does not settle.
+- Show when Stockfish is restarting and display any error details it provides in **Setup**. Stop after three failed retries.
+- Record Stockfish failures and Lichess Auto-move timing with **Setup → Diagnostics**. Export a JSON file to share. Recording is off by default and may slightly increase latency while enabled.
+- Label the Evaluation footer **Last Auto-move attempt** so an earlier attempt is easy to distinguish from the current recommendation.
+
 ## [3.0.3] — 2026-11-14
 
 - Lichess Instant move rechecks queued moves when the turn indicator changes. Chessist verifies the current game, position, and turn before sending input and waits while a premove is active.

@@ -1,6 +1,21 @@
 const { spawn } = require('child_process')
 const os = require('os')
 
+const MAX_ENGINE_RESTARTS = 3
+
+function diagnosticReason(startupError, output) {
+  // Stockfish can echo the full position or a local path in its error output.
+  // Export only descriptions we provide, even when Stockfish includes a reason.
+  if (startupError) return startupError.startsWith('Stockfish could not start')
+    ? 'Stockfish could not start'
+    : 'Stockfish did not respond during startup'
+  if (/allocat\w*[^\r\n]*(?:transposition table|hash memory)/i.test(output)) return 'Stockfish could not allocate hash memory'
+  if (/invalid fen|unsupported position/i.test(output)) return 'Stockfish rejected a board position'
+  if (/\b(?:evaluation network|network (?:evaluation parameters|file)|nnue)\b/i.test(output)) return 'Stockfish could not load its evaluation network'
+  if (/\bnuma\b|thread affinity/i.test(output)) return 'Stockfish could not configure processor affinity'
+  return output.trim() ? 'Stockfish reported an unrecognized error' : 'Stockfish gave no error details'
+}
+
 function parseInfoLine(line) {
   const out = {}
   const depth = line.match(/\bdepth (\d+)/);            if (depth) out.depth = +depth[1]
@@ -34,6 +49,7 @@ class Engine {
   constructor(onEval, onStatus, opts = {}) {
     this.onEval = onEval
     this.onStatus = onStatus
+    this.onDiagnostic = opts.onDiagnostic
     this.proc = null
     this.ready = false
     this.depth = 18
@@ -57,26 +73,46 @@ class Engine {
     this.threads = this.settings.threads
   }
 
+  _diagnostic(event, details = {}) {
+    if (!this.onDiagnostic) return
+    try { this.onDiagnostic({ event, ...details }) } catch { /* Diagnostics must not interrupt analysis. */ }
+  }
+
   start(stockfishPath) {
     if (this.proc) return
-    if (stockfishPath) this._path = stockfishPath
+    if (stockfishPath) {
+      this._path = stockfishPath
+      this._restarts = 0
+    }
     clearTimeout(this._restartTimer)
     this._intentional = false
     this.ready = false
     this.multipv = 1
     this._pendingOptions.clear()
-    this.onStatus?.({ status: 'starting', message: 'Stockfish: starting…' })
+    this._diagnostic('engine_start', {
+      threads: Number.isSafeInteger(this.threads) ? this.threads : null,
+      hash: Number.isSafeInteger(this.hashMb) ? this.hashMb : null,
+    })
+    if (!this._restarts) this.onStatus?.({ status: 'starting', message: 'Stockfish: starting…' })
     const proc = spawn(this._path, [], { windowsHide: true })
     this.proc = proc
     let startupError
+    let stderr = ''
+    let uciError = ''
+    let reachedReady = false
     const startupTimer = setTimeout(() => {
       if (this.proc !== proc || this.ready || this._intentional) return
       startupError = 'Stockfish did not respond during startup'
       proc.kill()
     }, 30000)
     proc.stdout.setEncoding('utf8')
-    proc.stderr.resume()
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2048) })
     let buf = ''
+    function captureUciError(line) {
+      const error = /^info string ((?:CRITICAL )?ERROR: .+)/i.exec(line)
+      if (error) uciError = (uciError + ' ' + error[1]).slice(0, 2048)
+    }
     proc.stdout.on('data', (chunk) => {
       if (this.proc !== proc || this._intentional) return
       buf += chunk
@@ -84,7 +120,12 @@ class Engine {
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i).trim()
         buf = buf.slice(i + 1)
-        if (line === 'readyok') clearTimeout(startupTimer)
+        captureUciError(line)
+        if (line === 'readyok' && !reachedReady) {
+          reachedReady = true
+          clearTimeout(startupTimer)
+          this._diagnostic('engine_ready')
+        }
         this._handle(line)
       }
     })
@@ -93,20 +134,29 @@ class Engine {
     proc.on('error', (e) => { startupError ||= `Stockfish could not start: ${e.code || e.message}` })
     proc.stdin.on('error', () => {})
     proc.stdout.on('error', () => {})
+    proc.stderr.on('error', () => {})
     proc.once('close', (code) => {
       clearTimeout(startupTimer)
       if (this.proc !== proc) return
+      const phase = this._searching ? 'searching' : reachedReady ? 'idle' : 'starting'
       this.ready = false
       this._searching = false
       this._stopping = false
       this._newGamePending = false
       this.proc = null
       if (this._intentional) return
-      this.onStatus?.({ status: 'error', message: startupError || `Stockfish exited${code === null ? '' : ` (code ${code})`}` })
-      // Bounded auto-restart so a one-off crash recovers without looping forever.
-      if (!startupError && this._path && this._restarts < 3) {
+      captureUciError(buf.trim())
+      const exit = startupError || `Stockfish exited${code === null ? '' : ` (code ${code})`}`
+      const detail = (uciError || stderr).replace(/[\x00-\x1F\x7F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400)
+      const message = detail ? `${exit}. ${detail}` : `${exit}.`
+      this._diagnostic('engine_exit', { code, phase, reason: diagnosticReason(startupError, uciError || stderr) })
+      if (!startupError && this._path && this._restarts < MAX_ENGINE_RESTARTS) {
         this._restarts++
         this._restartTimer = setTimeout(() => this.start(), 1200)
+        this._diagnostic('engine_retry', { attempt: this._restarts })
+        this.onStatus?.({ status: 'retrying', message: `${message} Restarting Stockfish…` })
+      } else {
+        this.onStatus?.({ status: 'error', message })
       }
     })
     this._send('uci')
@@ -128,7 +178,6 @@ class Engine {
     if (line === 'readyok') {
       if (this.ready) return
       this.ready = true
-      this._restarts = 0
       this.onStatus?.({ status: 'ready', message: 'Engine ready' })
       if (this._lastRequest) this._search(this._lastRequest)
       return
@@ -160,6 +209,8 @@ class Engine {
         else if (this._lastRequest) this._search(this._lastRequest)
         return
       }
+      if (this._restarts) this._diagnostic('engine_recovered', { attempt: this._restarts })
+      this._restarts = 0
       const move = line.split(/\s+/)[1]
       if (move === '(none)' || move === '0000') {
         const turn = this.curFen ? (this.curFen.split(' ')[1] || 'w') : 'w'
@@ -254,6 +305,7 @@ class Engine {
     this.settings[key] = value
     if (key === 'threads') this.threads = value
     if (key === 'hash') this.hashMb = value
+    if ((key === 'threads' || key === 'hash') && Number.isSafeInteger(value)) this._diagnostic('engine_settings', { [key]: value })
     switch (key) {
       case 'skillLevel':    this.setOption('Skill Level', value); break
       case 'limitStrength': this.setOption('UCI_LimitStrength', value ? 'true' : 'false')

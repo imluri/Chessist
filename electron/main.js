@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, shell, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, shell, clipboard, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { ensureStockfish } = require('./stockfish')
@@ -6,6 +6,7 @@ const { engineSettingsDefaults } = require('./engine')
 const { Overlay } = require('./overlay')
 const { Bridge } = require('./wsserver')
 const { PerformanceCheck } = require('./performance-check')
+const { Diagnostics } = require('./diagnostics')
 const updater = require('./updater')
 
 // --prod (or CHESSIST_PROD=1) forces production mode when running unpacked from
@@ -21,6 +22,7 @@ let updateInProgress = false
 let quitting = false
 let shutdownFinished = false
 let performanceCheck = null
+const diagnostics = new Diagnostics()
 
 // ── Settings persistence (userData/chessist-settings.json) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
@@ -51,7 +53,7 @@ const gameSettings = {
 }
 
 // App-level preferences (update channel, etc.).
-const appPrefs = { betaUpdates: false, sidebarShortcuts: [] }
+const appPrefs = { betaUpdates: false, sidebarShortcuts: [], diagnosticsEnabled: false }
 const engineSettings = engineSettingsDefaults()
 
 function normalizeSidebarShortcuts(ids) {
@@ -105,6 +107,7 @@ function pushStatus(patch) {
 }
 
 function updateStockfishStatus({ status, message }) {
+  diagnostics.record({ event: 'engine_status', state: status })
   const ready = status === 'ready'
   pushStatus({ stockfishOk: ready, stockfishState: status, message: ready ? '' : message })
 }
@@ -143,6 +146,7 @@ function startSubsystems() {
   Object.assign(gameSettings, saved.game || {})
   Object.assign(appPrefs, saved.app || {})
   appPrefs.sidebarShortcuts = normalizeSidebarShortcuts(appPrefs.sidebarShortcuts)
+  diagnostics.setEnabled(appPrefs.diagnosticsEnabled === true)
   const executable = app.isPackaged ? path.join(process.resourcesPath, 'bun-ws-worker.exe') : undefined
   bridge = new Bridge(pushStatus, {
     executable,
@@ -154,9 +158,14 @@ function startSubsystems() {
     },
     onPosition: (data) => sendToRenderer('position', data),
     onEval: (data) => sendToRenderer('eval', data),
-    onAutoMoveStatus: (data) => sendToRenderer('auto-move-status', data),
+    onAutoMoveStatus: (data) => {
+      if (data) diagnostics.record({ event: 'move_outcome', state: data.state })
+      sendToRenderer('auto-move-status', data)
+    },
     onOverlay: (data) => overlay.draw(data),
     onEngineStatus: updateStockfishStatus,
+    onDiagnostic: data => diagnostics.record(data),
+    diagnosticsEnabled: diagnostics.enabled,
   })
   bridge.start().catch(() => {}) // The bridge reports startup failures through component status.
   overlay.start()
@@ -220,6 +229,36 @@ function registerIpc() {
   ipcMain.handle('stockfish:redownload', () => {
     if (performanceCheck) throw new Error('Wait for the performance check to finish.')
     return prepareStockfish(true)
+  })
+  ipcMain.handle('diagnostics:get', () => ({ enabled: diagnostics.enabled }))
+  ipcMain.handle('diagnostics:set-enabled', (event, enabled) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') {
+      throw new Error('Could not change diagnostics recording.')
+    }
+    const previous = appPrefs.diagnosticsEnabled
+    appPrefs.diagnosticsEnabled = enabled
+    if (!saveAll()) {
+      appPrefs.diagnosticsEnabled = previous
+      throw new Error('Could not save diagnostics settings.')
+    }
+    diagnostics.setEnabled(enabled)
+    bridge?.setDiagnosticsEnabled(enabled)
+    if (enabled) {
+      diagnostics.record({ event: 'engine_status', state: componentStatus.stockfishState })
+      diagnostics.record({ event: 'engine_settings', threads: engineSettings.threads, hash: engineSettings.hash })
+    }
+    return { enabled: diagnostics.enabled }
+  })
+  ipcMain.handle('diagnostics:export', async event => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Open Setup to export diagnostics.')
+    const date = new Date().toISOString().slice(0, 10)
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Chessist diagnostics', defaultPath: `chessist-diagnostics-${date}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (canceled || !filePath) return { saved: false }
+    await diagnostics.export(filePath, app.getVersion())
+    return { saved: true }
   })
   ipcMain.handle('performance:run', async (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Open Setup to run a performance check.')

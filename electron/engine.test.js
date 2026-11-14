@@ -1,3 +1,6 @@
+import { mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { defaultHashMb, Engine, parseInfoLine } from './engine.js'
 
@@ -178,4 +181,98 @@ describe('Engine evaluation queue', () => {
       'stop', 'ucinewgame', 'isready', 'setoption name MultiPV value 3', `position fen ${next}`, 'go depth 18',
     ])
   })
+})
+
+describe('Stockfish exit recovery', () => {
+  const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+
+  async function withFakeStockfish(onSearch, check) {
+    const temp = await mkdtemp(join(tmpdir(), 'chessist-engine-'))
+    const fixture = join(temp, 'uci.cjs')
+    const launches = join(temp, 'launches')
+    const priorNodeOptions = process.env.NODE_OPTIONS
+    const onStatus = vi.fn()
+    const onEval = vi.fn()
+    const onDiagnostic = vi.fn()
+    const engine = new Engine(onEval, onStatus, { onDiagnostic })
+    try {
+      // Engine launches without arguments, so preload a UCI fixture into a spare Node process.
+      await writeFile(fixture, `
+        if (process.argv.length === 1) {
+          const fs = require('node:fs')
+          const launches = ${JSON.stringify(launches)}
+          const attempt = fs.existsSync(launches) ? Number(fs.readFileSync(launches, 'utf8')) + 1 : 1
+          fs.writeFileSync(launches, String(attempt))
+          const input = require('node:readline').createInterface({ input: process.stdin })
+          function fail() {
+            process.exitCode = 1
+            input.close()
+            process.stdin.destroy()
+          }
+          input.on('line', line => {
+            if (line === 'uci') console.log('uciok')
+            if (line === 'isready') console.log('readyok')
+            if (line.startsWith('go depth ')) {
+              ${onSearch}
+            }
+          })
+        }
+      `)
+      process.env.NODE_OPTIONS = `--require="${fixture.replaceAll('\\', '/')}"`
+      engine.evaluate(fen, 10, 1)
+      engine.start(process.execPath)
+      await check({ onStatus, onEval, onDiagnostic })
+    } finally {
+      await engine.kill()
+      if (priorNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = priorNodeOptions
+      await rm(fixture, { force: true })
+      await rm(launches, { force: true })
+      await rmdir(temp)
+    }
+  }
+
+  it('reports stderr while retrying and resumes a queued evaluation', async () => {
+    await withFakeStockfish(`
+      if (attempt === 1) {
+        process.stderr.write('Could not allocate ')
+        process.stderr.write('hash memory\\n')
+        fail()
+      } else {
+        console.log('info depth 10 score cp 20 pv e2e4')
+        console.log('bestmove e2e4')
+      }
+    `, async ({ onStatus, onEval, onDiagnostic }) => {
+      await vi.waitFor(() => expect(onEval).toHaveBeenCalledWith(expect.objectContaining({ fen, depth: 10 })), { timeout: 8000 })
+      expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'retrying', message: expect.stringMatching(/code 1.*Could not allocate hash memory/i),
+      }))
+      expect(onStatus).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }))
+      expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready' }))
+      await vi.waitFor(() => expect(onDiagnostic).toHaveBeenLastCalledWith({ event: 'engine_recovered', attempt: 1 }))
+      expect(onDiagnostic).toHaveBeenCalledWith({
+        event: 'engine_exit', code: 1, phase: 'searching', reason: 'Stockfish could not allocate hash memory',
+      })
+    })
+  }, 10000)
+
+  it('stops retrying a search that consistently exits after readyok', async () => {
+    await withFakeStockfish(`
+      console.log('info string CRITICAL ERROR: Command [position fen ${fen}] failed. Reason: Invalid FEN at C:/Users/example/board.txt')
+      fail()
+    `, async ({ onStatus, onDiagnostic }) => {
+      await vi.waitFor(() => expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+        status: 'error', message: expect.stringMatching(/code 1.*Invalid FEN/i),
+      })), { timeout: 10000 })
+      const statuses = onStatus.mock.calls.map(([event]) => event.status)
+      expect(statuses.filter(status => status === 'retrying')).toHaveLength(3)
+      expect(statuses.filter(status => status === 'ready')).toHaveLength(4)
+      expect(onDiagnostic).toHaveBeenCalledWith({
+        event: 'engine_exit', code: 1, phase: 'searching', reason: 'Stockfish rejected a board position',
+      })
+      const exported = JSON.stringify(onDiagnostic.mock.calls)
+      expect(exported).not.toContain(fen)
+      expect(exported).not.toContain('C:/Users/example/board.txt')
+    })
+  }, 12000)
 })

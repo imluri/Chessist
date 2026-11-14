@@ -50,15 +50,16 @@ function StockfishModule({ status }) {
   const { stockfishState, message } = status
   const failed = stockfishState === 'error'
   const downloading = stockfishState === 'downloading'
+  const retrying = stockfishState === 'retrying'
   const state = failed ? 'error' : stockfishState === 'ready' ? 'ok' : 'working'
   const disabled = busy || downloading
 
   return (
-    <ModuleCard title="Stockfish engine" state={state} statusLabel={failed ? 'unavailable' : stockfishState}>
+    <ModuleCard title="Stockfish engine" state={state} statusLabel={failed ? 'unavailable' : retrying ? 'restarting' : stockfishState}>
       <p style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6, marginBottom: 12 }}>
         Native Stockfish powers analysis. It's downloaded automatically on first run and stored with the app.
       </p>
-      {(downloading || failed) && message && (
+      {(downloading || failed || retrying) && message && (
         <p role="status" style={{ fontSize: 12, color: failed ? STATUS.error.color : 'rgb(var(--fg-muted))', lineHeight: 1.6, marginBottom: 12 }}>
           {message}
         </p>
@@ -67,6 +68,82 @@ function StockfishModule({ status }) {
         {busy ? 'Re-downloading…' : 'Re-download Stockfish'}
       </button>
       {actionError && <p role="alert" style={{ color: STATUS.error.color, fontSize: 12, marginTop: 8 }}>{actionError}</p>}
+    </ModuleCard>
+  )
+}
+
+function DiagnosticsModule() {
+  const [enabled, setEnabled] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [exported, setExported] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    async function loadStatus() {
+      try {
+        const { enabled } = await window.chessist.getDiagnosticsStatus()
+        if (mounted) setEnabled(enabled)
+      } catch (failure) {
+        if (mounted) setError(operationError(failure, 'Could not load diagnostics settings.'))
+      }
+    }
+    loadStatus()
+    return () => { mounted = false }
+  }, [])
+
+  async function changeRecording(recording) {
+    setBusy(true)
+    setError('')
+    setExported(false)
+    try {
+      const { enabled } = await window.chessist.setDiagnosticsEnabled(recording)
+      setEnabled(enabled)
+    } catch (failure) {
+      setError(operationError(failure, 'Could not change diagnostics recording.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function exportFile() {
+    setBusy(true)
+    setError('')
+    setExported(false)
+    try {
+      const { saved } = await window.chessist.exportDiagnostics()
+      setExported(saved)
+    } catch (failure) {
+      setError(operationError(failure, 'Could not export diagnostics.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const disabled = busy || enabled === null
+  const description = { fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6 }
+
+  return (
+    <ModuleCard title="Diagnostics" state={error ? 'error' : enabled ? 'ok' : 'off'}
+      statusLabel={enabled === null ? (error ? 'unavailable' : 'loading') : enabled ? 'recording' : 'off'}>
+      <p style={description}>
+        Record Stockfish errors and Auto-move timing on this PC. Export diagnostics to share the latest 500 events from this session.
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginTop: 12 }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <input type="checkbox" checked={enabled === true} disabled={disabled}
+            aria-describedby="diagnostics-latency" onChange={event => changeRecording(event.target.checked)}
+            style={{ accentColor: 'rgb(var(--accent))' }} />
+          Record diagnostics
+        </label>
+        <button type="button" disabled={disabled} onClick={exportFile}
+          style={{ ...btn, opacity: disabled ? 0.55 : 1, cursor: disabled ? 'default' : 'pointer' }}>
+          Export diagnostics
+        </button>
+      </div>
+      <p id="diagnostics-latency" style={{ ...description, marginTop: 8 }}>Recording may slightly increase latency.</p>
+      {exported && <p role="status" style={{ ...description, marginTop: 8 }}>Diagnostics file saved.</p>}
+      {error && <p role="alert" style={{ ...description, color: STATUS.error.color, marginTop: 8 }}>{error}</p>}
     </ModuleCard>
   )
 }
@@ -301,6 +378,7 @@ export default function SetupPage({ status }) {
         <p>Manage Stockfish, the overlay, and your browser extension. Check local performance.</p>
       </header>
       <StockfishModule status={status} />
+      <DiagnosticsModule />
       <PerformanceModule />
       <OverlayModule status={status} />
       <ExtensionModule status={status} />

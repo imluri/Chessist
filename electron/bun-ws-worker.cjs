@@ -2,6 +2,7 @@ const { createInterface } = require('node:readline')
 const { write } = require('node:fs')
 const { Engine } = require('./engine')
 const { benchmarkStockfish } = require('./performance-stockfish')
+const { moveDiagnostic } = require('./diagnostics')
 
 const MAX_PAYLOAD = 256 * 1024
 const MAX_PENDING_OVERLAY_BYTES = 1024 * 1024
@@ -24,6 +25,9 @@ let outputBlocked = false
 let pendingOverlayBytes = 0
 let benchmark
 let moveStatusSource
+let diagnosticsEnabled = false
+let diagnosticWindow = 0
+let diagnosticCount = 0
 
 const BENCHMARK_BOARD_ERROR = 'Close chess boards connected to Chessist before running the Stockfish benchmark.'
 
@@ -107,7 +111,10 @@ const engine = new Engine(
   data => {
     updateStockfishStatus(data)
     report({ type: 'engine-status', data })
-  }
+  },
+  { onDiagnostic: data => {
+    if (diagnosticsEnabled) report({ type: 'diagnostic', data })
+  } }
 )
 
 function isOlderExtensionVersion(current, available) {
@@ -146,6 +153,7 @@ function identify(socket, message) {
     benchmark?.controller.abort(new Error(BENCHMARK_BOARD_ERROR))
     contentClients.set(socket, typeof message.site === 'string' ? message.site : null)
     if (gameSettings) socket.sendText(JSON.stringify({ type: 'settings', data: gameSettings }))
+    if (diagnosticsEnabled) socket.sendText(JSON.stringify({ type: 'diagnostics', enabled: true }))
   } else if (message.role === 'extension') {
     const browser = message.browser === 'firefox' ? 'firefox' : 'chromium'
     const version = versions[browser]
@@ -216,6 +224,21 @@ function onMessage(socket, raw) {
     case 'auto_move_status':
       reportMoveStatus(socket, message.data)
       return
+    case 'diagnostic': {
+      if (!diagnosticsEnabled || !contentClients.has(socket)) return
+      const now = Date.now()
+      if (now - diagnosticWindow >= 1000) {
+        diagnosticWindow = now
+        diagnosticCount = 0
+      }
+      if (diagnosticCount >= 40) return
+      const data = moveDiagnostic(message.data)
+      if (data) {
+        diagnosticCount++
+        report({ type: 'diagnostic', data })
+      }
+      return
+    }
     case 'evaluate':
       if (validFen(message.fen) && validSearchSetting(message.depth, 30) && validSearchSetting(message.multiPv, 3)) {
         engine.evaluate(message.fen, message.depth, message.multiPv, message.force === true)
@@ -316,6 +339,7 @@ input.on('line', (line) => {
   switch (command?.type) {
     case 'configure':
       versions = command.versions ?? {}
+      diagnosticsEnabled = command.diagnosticsEnabled === true
       setGameSettings(command.game)
       for (const [key, value] of Object.entries(command.engine ?? {})) engine.applySetting(key, value)
       if (command.stockfishState) {
@@ -347,6 +371,12 @@ input.on('line', (line) => {
     case 'game-settings':
       setGameSettings(command.data)
       break
+    case 'diagnostics': {
+      diagnosticsEnabled = command.enabled === true
+      const message = JSON.stringify({ type: 'diagnostics', enabled: diagnosticsEnabled })
+      for (const socket of contentClients.keys()) socket.sendText(message)
+      break
+    }
     case 'stockfish-status':
       updateStockfishStatus(command)
       break

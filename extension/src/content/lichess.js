@@ -1005,6 +1005,19 @@
   function reportAutoMove(stage, data = {}) {
     log('Chessist auto-move:', stage, data);
   }
+
+  function reportMoveDiagnostic(session, data) {
+    if (!session || _overlayWs?.diagnosticsSession !== session || _overlayWs.readyState !== WebSocket.OPEN) return;
+    try { _overlayWs.send(JSON.stringify({ type: 'diagnostic', data })); } catch (_) {}
+  }
+
+  function reportMoveWait(diagnostic, reason) {
+    if (!diagnostic || diagnostic.waitReason === reason || _overlayWs?.diagnosticsSession !== diagnostic.session) return;
+    diagnostic.waitReason = reason;
+    reportMoveDiagnostic(diagnostic.session, {
+      event: 'move_waiting', reason, elapsedMs: Math.round(performance.now() - diagnostic.queuedAt),
+    });
+  }
   let _overlayReconnectTimer = null;
 
   // ── Move prediction cache ─────────────────────────────────────────────────
@@ -1146,6 +1159,8 @@
             if (msg.status === 'ready' && currentFen && !document.hidden) {
               setTimeout(() => requestEval(currentFen), 20);
             }
+          } else if (msg.type === 'diagnostics') {
+            socket.diagnosticsSession = msg.enabled === true ? (socket.diagnosticsSession ?? {}) : null;
           } else if (msg.type === 'settings' && msg.data) {
             const initial = !socket.settingsReady;
             socket.settingsReady = true;
@@ -1423,7 +1438,18 @@
     if (!gameId || gameId !== lastGameId || !positionKey || _fenKey(evaluation.fen) !== positionKey ||
         `${gameId} ${positionKey}` === lastAutoMovePosition) return;
 
-    pendingAutoMove = { gameId, positionKey, evaluation };
+    const session = _overlayWs?.diagnosticsSession;
+    let diagnostic;
+    if (session) {
+      const previous = pendingAutoMove;
+      if (previous?.gameId === gameId && previous.positionKey === positionKey && previous.diagnostic?.session === session) {
+        diagnostic = previous.diagnostic;
+      } else {
+        diagnostic = { session, queuedAt: performance.now() };
+        reportMoveDiagnostic(session, { event: 'move_queued', depth: evaluation.depth });
+      }
+    }
+    pendingAutoMove = { gameId, positionKey, evaluation, diagnostic };
     reportAutoMove('evaluation-queued', { move: evaluation.bestMove, depth: evaluation.depth, position: positionKey });
     tryPendingAutoMove();
   }
@@ -1431,15 +1457,25 @@
   function tryPendingAutoMove() {
     if (!pendingAutoMove) return;
 
-    const { gameId, positionKey, evaluation } = pendingAutoMove;
-    if (getGameId() !== gameId || _fenKey(currentFen) !== positionKey) {
+    const { gameId, positionKey, evaluation, diagnostic } = pendingAutoMove;
+    if (getGameId() !== gameId) {
+      reportMoveWait(diagnostic, 'game_changed');
+      pendingAutoMove = null;
+      return;
+    }
+    if (_fenKey(currentFen) !== positionKey) {
+      reportMoveWait(diagnostic, 'position_changed');
       pendingAutoMove = null;
       return;
     }
 
     // Engine results and the live turn can arrive separately. Keep this result
     // until the board confirms it or the round advances to another position.
-    if (autoMoveExecuting || countdownInterval || !canExecuteMove(positionKey, gameId)) return;
+    const waitReason = autoMoveExecuting ? 'previous_input' : countdownInterval ? 'countdown' : moveBlockReason(positionKey, gameId);
+    if (waitReason) {
+      reportMoveWait(diagnostic, waitReason);
+      return;
+    }
     if (!moveBelongsToColor(evaluation.bestMove, currentFen, playerColor)) {
       pendingAutoMove = null;
       return;
@@ -1725,23 +1761,33 @@
   // MOVE EXECUTION (lichess / chessground)
   // ============================================================
 
-  function canExecuteMove(expectedPosition, expectedGameId) {
-    if (!isEnabled || !autoMove || document.hidden || !expectedPosition ||
-        _fenKey(currentFen) !== expectedPosition || !expectedGameId || getGameId() !== expectedGameId) return false;
+  function moveBlockReason(expectedPosition, expectedGameId) {
+    if (!isEnabled || !autoMove || document.hidden) return 'inactive';
+    if (!expectedPosition || _fenKey(currentFen) !== expectedPosition) return 'position_changed';
+    if (!expectedGameId || getGameId() !== expectedGameId) return 'game_changed';
 
     const board = findBoard();
-    if (!isInOwnGame(board) || hasActivePremove(getBoardSurface(board))) return false;
+    if (!isInOwnGame(board)) return 'board_missing';
+    if (hasActivePremove(getBoardSurface(board))) return 'premove';
 
     const [placement, turn] = expectedPosition.split(' ');
-    if (turn !== playerColor || !domConfirmsPlayerTurn(board, placement)) return false;
+    if (turn !== playerColor || !domConfirmsPlayerTurn(board, placement)) return 'turn_unconfirmed';
 
     // Read the actual board. A cached or page-wide FEN can describe an older position.
-    return parsePiecesFromDOM(board)?.startsWith(`${expectedPosition} `) === true;
+    return parsePiecesFromDOM(board)?.startsWith(`${expectedPosition} `) ? null : 'board_unsettled';
+  }
+
+  function canExecuteMove(expectedPosition, expectedGameId) {
+    return moveBlockReason(expectedPosition, expectedGameId) === null;
   }
 
   async function _executeMoveVerified(move, positionKeyBefore, gameId) {
     const moveKey = `${gameId} ${positionKeyBefore}`;
     if (autoMoveExecuting || lastAutoMovePosition === moveKey || !canExecuteMove(positionKeyBefore, gameId)) return;
+    const session = _overlayWs?.diagnosticsSession;
+    const diagnostic = pendingAutoMove?.diagnostic;
+    let dispatchedAt;
+    let response;
     pendingAutoMove = null;
     autoMoveExecuting = true;
     lastAutoMovePosition = moveKey;
@@ -1750,14 +1796,28 @@
     try {
       attempt = autoMoveObservation?.begin({ move, before: currentFen, context: gameId });
       reportAutoMove(`execute-${moveMode}-primary`, { move, position: positionKeyBefore });
+      if (session) {
+        dispatchedAt = performance.now();
+        reportMoveDiagnostic(session, {
+          event: 'move_dispatch',
+          elapsedMs: diagnostic?.session === session ? Math.round(dispatchedAt - diagnostic.queuedAt) : undefined,
+        });
+      }
       // A missing or failed reply can follow partial input. Do not resend it.
-      const response = await executeMove(move, moveMode);
+      response = await executeMove(move, moveMode);
       autoMoveObservation?.sent(attempt, response?.success ? undefined : response?.error || 'No successful input reply.');
     } catch (error) {
       reportAutoMove('execute-error', { move, error: String(error) });
       autoMoveObservation?.sent(attempt, String(error));
     } finally {
       autoMoveExecuting = false;
+      if (dispatchedAt !== undefined && _overlayWs?.diagnosticsSession === session) {
+        const executor = response?.executor;
+        reportMoveDiagnostic(session, {
+          event: 'move_relay', elapsedMs: Math.round(performance.now() - dispatchedAt), success: response?.success === true,
+          executor: executor === 'cdp-dom-input' || executor === 'main-world-dom-input' ? executor : undefined,
+        });
+      }
     }
   }
 
@@ -1872,7 +1932,11 @@
       if (!board) { log('Chessist: No board found'); return; }
 
       const cgBoard = getBoardSurface(board);
-      if (hasActivePremove(cgBoard)) { log('Chessist: Premove detected, skipping eval'); return; }
+      if (hasActivePremove(cgBoard)) {
+        reportMoveWait(pendingAutoMove?.diagnostic, 'premove');
+        log('Chessist: Premove detected, skipping eval');
+        return;
+      }
 
       const gameId = getGameId();
       const roundChanged = gameId !== lastGameId;

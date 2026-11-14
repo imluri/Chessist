@@ -4,6 +4,7 @@ const hint = document.getElementById('hint')
 
 const engineStatus = {
   starting: ['waiting', 'Stockfish is starting', 'The Chessist app is connected. Analysis will start when Stockfish is ready.'],
+  retrying: ['waiting', 'Stockfish is restarting', 'Check the Setup tab in Chessist for details.'],
   downloading: ['waiting', 'Downloading Stockfish', 'Check the Setup tab in Chessist for download progress.'],
   ready: ['ok', 'Stockfish is ready', 'Open a board on Chess.com or Lichess to start analysis.'],
   error: ['off', 'Stockfish is unavailable', 'Open the Setup tab in Chessist to see the error and retry.'],

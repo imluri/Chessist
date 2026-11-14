@@ -169,6 +169,39 @@ it('forwards only validated content move outcomes to Electron and clears on disc
   await vi.waitFor(() => expect(onAutoMoveStatus).toHaveBeenLastCalledWith(null))
 }, 10000)
 
+it('accepts only opt-in diagnostic events and strips browser-supplied private fields', async () => {
+  const onDiagnostic = vi.fn()
+  createBridge(vi.fn(), { game: { autoMove: true }, onDiagnostic })
+  const port = await bridge.start()
+  const content = connect(port, extensionOrigin)
+  const popup = connect(port, extensionOrigin)
+  await Promise.all([opened(content), opened(popup)])
+  await request(content, { type: 'identify', role: 'content', site: 'Lichess' }, 'settings')
+
+  const trace = { type: 'diagnostic', data: { event: 'move_waiting', reason: 'turn_unconfirmed',
+    elapsedMs: 15, fen, user: 'private-account', detail: 'private error text' } }
+  content.send(JSON.stringify(trace))
+  await request(content, { type: 'get_status' }, 'app_status')
+  expect(onDiagnostic).not.toHaveBeenCalled()
+
+  const enabled = nextMessage(content, 'diagnostics')
+  bridge.setDiagnosticsEnabled(true)
+  await expect(enabled).resolves.toMatchObject({ enabled: true })
+  popup.send(JSON.stringify(trace))
+  await request(popup, { type: 'get_status' }, 'app_status')
+  content.send(JSON.stringify(trace))
+  await vi.waitFor(() => expect(onDiagnostic.mock.calls).toEqual([[{
+    event: 'move_waiting', reason: 'turn_unconfirmed', elapsedMs: 15,
+  }]]))
+
+  const disabled = nextMessage(content, 'diagnostics')
+  bridge.setDiagnosticsEnabled(false)
+  await expect(disabled).resolves.toMatchObject({ enabled: false })
+  content.send(JSON.stringify(trace))
+  await request(content, { type: 'get_status' }, 'app_status')
+  expect(onDiagnostic).toHaveBeenCalledOnce()
+}, 10000)
+
 it.each([
   ['2.0.9', true, true],
   ['2.0.10', false, false],

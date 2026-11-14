@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('chessist', {
   getSidebarShortcuts: () => ipcRenderer.invoke('sidebar:get-shortcuts'),
   setSidebarShortcuts: (ids) => ipcRenderer.invoke('sidebar:set-shortcuts', ids),
   redownloadStockfish: () => ipcRenderer.invoke('stockfish:redownload'),
+  getDiagnosticsStatus: () => ipcRenderer.invoke('diagnostics:get'),
+  setDiagnosticsEnabled: enabled => ipcRenderer.invoke('diagnostics:set-enabled', enabled),
+  exportDiagnostics: () => ipcRenderer.invoke('diagnostics:export'),
   runPerformanceCheck: () => ipcRenderer.invoke('performance:run'),
   onPerformancePhase: (cb) => {
     const listener = (_event, phase) => cb(phase)

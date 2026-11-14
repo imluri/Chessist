@@ -15,7 +15,7 @@ const DISCONNECTED = {
 class Bridge {
   constructor(onComponent, {
     port = PORT, executable, game = {}, engine = {}, versions = {},
-    onPosition, onEval, onAutoMoveStatus, onOverlay, onEngineStatus,
+    onPosition, onEval, onAutoMoveStatus, onOverlay, onEngineStatus, onDiagnostic, diagnosticsEnabled = false,
   } = {}) {
     this.onComponent = onComponent
     this.onPosition = onPosition
@@ -23,6 +23,8 @@ class Bridge {
     this.onAutoMoveStatus = onAutoMoveStatus
     this.onOverlay = onOverlay
     this.onEngineStatus = onEngineStatus
+    this.onDiagnostic = onDiagnostic
+    this.diagnosticsEnabled = diagnosticsEnabled
     this.port = port
     this.executable = executable
     this.game = { ...game }
@@ -87,6 +89,7 @@ class Bridge {
         case 'eval': this.onEval?.(data); break
         case 'auto-move-status': this.onAutoMoveStatus?.(data); break
         case 'engine-status': this._setStatus(data); break
+        case 'diagnostic': this.onDiagnostic?.(data); break
         case 'fatal': failure = event.message; break
         case 'result': {
           const request = worker.pending.get(event.requestId)
@@ -126,6 +129,7 @@ class Bridge {
 
     this._send({
       type: 'configure', game: this.game, engine: this.engine, versions: this.versions,
+      diagnosticsEnabled: this.diagnosticsEnabled,
       stockfishState: this.stockfish.status, stockfishMessage: this.stockfish.message,
     })
     if (this.enginePath) this._send({ type: 'engine-start', path: this.enginePath })
@@ -152,6 +156,11 @@ class Bridge {
   broadcastSettings(settings) {
     this.game = { ...settings }
     this._send({ type: 'game-settings', data: this.game })
+  }
+
+  setDiagnosticsEnabled(enabled) {
+    this.diagnosticsEnabled = enabled
+    this._send({ type: 'diagnostics', enabled })
   }
 
   applyEngineSetting(key, value) {

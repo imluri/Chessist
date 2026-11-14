@@ -203,7 +203,44 @@ async function cdpClick(tabId, point, instant = false) {
   await cdpPause(instant ? 4 : 35)
 }
 
-async function cdpBoardMove(tabId, from, to, mode, instant = false) {
+async function waitForRenderedDrag(tabId, destination) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: ({ x, y }) => new Promise(resolve => {
+      const wrap = document.querySelector('cg-wrap') || document.querySelector('.cg-wrap')
+      const board = wrap?.querySelector('cg-board') || wrap
+      const piece = board?.querySelector('piece.dragging')
+      if (!piece || document.hidden) { resolve(false); return }
+
+      function checkDrag() {
+        if (!board.isConnected || !piece.isConnected || !piece.classList.contains('dragging') || document.hidden) {
+          finish(false)
+          return
+        }
+        const { left, top, width, height } = piece.getBoundingClientRect()
+        if (width > 0 && height > 0 && Math.abs(left + width / 2 - x) < width / 4 &&
+            Math.abs(top + height / 2 - y) < height / 4) {
+          finish(true)
+          return
+        }
+        frame = requestAnimationFrame(checkDrag)
+      }
+
+      function finish(ready) {
+        clearTimeout(timeout)
+        cancelAnimationFrame(frame)
+        resolve(ready)
+      }
+
+      let frame = requestAnimationFrame(checkDrag)
+      const timeout = setTimeout(() => finish(false), 200)
+    }),
+    args: [destination],
+  })
+  return result?.[0]?.result === true
+}
+
+async function cdpBoardMove(tabId, from, to, mode, instant = false, waitForFrame = false) {
   try {
     if (mode === 'click') {
       await cdpClick(tabId, from, instant)
@@ -220,7 +257,16 @@ async function cdpBoardMove(tabId, from, to, mode, instant = false) {
         y: (from.y + to.y) / 2,
       }, { button: 'left', buttons: 1 })
       await cdpMouse(tabId, 'mouseMoved', to, { button: 'left', buttons: 1 })
-      await cdpPause(instant ? 4 : 12)
+      if (waitForFrame) {
+        // Chessground starts a new drag on an animation frame after the pointer moves.
+        const dragReady = await waitForRenderedDrag(tabId, to).catch(() => false)
+        if (!dragReady) {
+          await cdpMouse(tabId, 'mouseReleased', from, { button: 'left', buttons: 0, clickCount: 1 })
+          throw new Error('The browser did not render the drag in time')
+        }
+      } else {
+        await cdpPause(instant ? 4 : 12)
+      }
       await cdpMouse(tabId, 'mouseReleased', to, { button: 'left', buttons: 0, clickCount: 1 })
     }
   } catch (error) {
@@ -238,7 +284,7 @@ async function executeCdpMove(tabId, from, to, mode, instant = false, onInputSta
       await ensureDebugger(tabId)
       inputStarted = true
       onInputStart?.()
-      await cdpBoardMove(tabId, from, to, mode, instant)
+      await cdpBoardMove(tabId, from, to, mode, instant, instant && Boolean(onInputStart))
       return
     } catch (error) {
       if (!firstError) firstError = error

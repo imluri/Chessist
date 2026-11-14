@@ -5,6 +5,7 @@ const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const piecesKey = (fen) => (fen ? fen.split(' ')[0] : '')
 const STOCKFISH_LABELS = {
   starting: 'Starting Stockfish…',
+  retrying: 'Restarting Stockfish…',
   downloading: 'Downloading Stockfish…',
   error: 'Stockfish unavailable',
 }
@@ -22,7 +23,7 @@ function AutoMoveStatus({ status }) {
   const move = status?.move
   const promotion = move?.length === 5 ? `=${move[4].toUpperCase()}` : ''
   return <div role="status" aria-atomic="true" style={{ color: 'rgb(var(--fg-muted))' }}>
-    {label && <><strong>Auto-move {move.slice(0, 2)} → {move.slice(2, 4)}{promotion}.</strong> {label}</>}
+    {label && <><strong>Last Auto-move attempt {move.slice(0, 2)} → {move.slice(2, 4)}{promotion}.</strong> {label}</>}
   </div>
 }
 
