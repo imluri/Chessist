@@ -6,8 +6,10 @@ const { benchmarkStockfish } = require('./performance-stockfish')
 const MAX_PAYLOAD = 256 * 1024
 const MAX_PENDING_OVERLAY_BYTES = 1024 * 1024
 const BROADCAST_TOPIC = 'all'
-const SNAPSHOT_REPORTS = new Set(['eval', 'position', 'component'])
+const SNAPSHOT_REPORTS = new Set(['eval', 'position', 'component', 'auto-move-status'])
 const EXTENSION_VERSION = /^\d{1,5}(?:\.\d{1,5}){0,3}$/
+const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/
+const MOVE_STATES = new Set(['sending', 'confirmed', 'unchanged', 'changed', 'unverified', 'dispatch_error'])
 const FEN_PLACEMENT = /^[prnbqkPRNBQK1-8]{1,8}(?:\/[prnbqkPRNBQK1-8]{1,8}){7}$/
 const contentClients = new Map()
 const presenceClients = new Map()
@@ -21,6 +23,7 @@ let stopping = false
 let outputBlocked = false
 let pendingOverlayBytes = 0
 let benchmark
+let moveStatusSource
 
 const BENCHMARK_BOARD_ERROR = 'Close chess boards connected to Chessist before running the Stockfish benchmark.'
 
@@ -175,6 +178,23 @@ function validSearchSetting(value, max) {
   return value === undefined || (Number.isInteger(value) && value >= 1 && value <= max)
 }
 
+function reportMoveStatus(socket, data) {
+  if (!contentClients.has(socket)) return
+  if (data === null) {
+    clearMoveStatus(socket)
+    return
+  }
+  if (typeof data?.move !== 'string' || !UCI_MOVE.test(data.move) || !MOVE_STATES.has(data.state)) return
+  moveStatusSource = socket
+  report({ type: 'auto-move-status', data: { move: data.move, state: data.state } })
+}
+
+function clearMoveStatus(socket) {
+  if (moveStatusSource !== socket) return
+  moveStatusSource = undefined
+  report({ type: 'auto-move-status', data: null })
+}
+
 function onMessage(socket, raw) {
   let message
   try { message = JSON.parse(raw) } catch { return }
@@ -193,6 +213,9 @@ function onMessage(socket, raw) {
     case 'position':
       if (validFen(message.fen)) report({ type: 'position', data: { fen: message.fen, flipped: !!message.flipped } })
       return
+    case 'auto_move_status':
+      reportMoveStatus(socket, message.data)
+      return
     case 'evaluate':
       if (validFen(message.fen) && validSearchSetting(message.depth, 30) && validSearchSetting(message.multiPv, 3)) {
         engine.evaluate(message.fen, message.depth, message.multiPv, message.force === true)
@@ -202,6 +225,7 @@ function onMessage(socket, raw) {
       engine.stop()
       return
     case 'new_game':
+      clearMoveStatus(socket)
       engine.newGame()
       return
     // Older extensions may try to override desktop settings. Search depth
@@ -262,6 +286,7 @@ function listen(hostname, port) {
         const content = contentClients.delete(socket)
         const presence = presenceClients.delete(socket)
         if (stopping) return
+        clearMoveStatus(socket)
         if (content && !contentClients.size) engine.stop()
         if (content || presence) reportConnections()
       },

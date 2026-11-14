@@ -142,6 +142,33 @@ it('handles the popup, position, overlay, and live settings protocol in Bun', as
   })))
 }, 10000)
 
+it('forwards only validated content move outcomes to Electron and clears on disconnect', async () => {
+  const onAutoMoveStatus = vi.fn()
+  createBridge(vi.fn(), { game: { autoMove: true }, onAutoMoveStatus })
+  const port = await bridge.start()
+  const content = connect(port, extensionOrigin)
+  const popup = connect(port, extensionOrigin)
+  await Promise.all([opened(content), opened(popup)])
+
+  const sendStatus = (socket, move, state) => socket.send(JSON.stringify({
+    type: 'auto_move_status', data: { move, state, extra: 'not forwarded' },
+  }))
+  sendStatus(popup, 'e7c5', 'confirmed')
+  await request(popup, { type: 'get_status' }, 'app_status')
+  await request(content, { type: 'identify', role: 'content' }, 'settings')
+  sendStatus(content, 'invalid', 'confirmed')
+  sendStatus(content, 'e7c5', 'invalid')
+  const popupMessages = vi.fn()
+  popup.on('message', popupMessages)
+  sendStatus(content, 'e7c5', 'unchanged')
+  await vi.waitFor(() => expect(onAutoMoveStatus.mock.calls).toEqual([[{ move: 'e7c5', state: 'unchanged' }]]))
+  await request(popup, { type: 'get_status' }, 'app_status')
+  expect(popupMessages.mock.calls.map(([data]) => JSON.parse(data.toString()).type)).toEqual(['app_status'])
+
+  content.close()
+  await vi.waitFor(() => expect(onAutoMoveStatus).toHaveBeenLastCalledWith(null))
+}, 10000)
+
 it.each([
   ['2.0.9', true, true],
   ['2.0.10', false, false],

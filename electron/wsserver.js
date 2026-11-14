@@ -15,11 +15,12 @@ const DISCONNECTED = {
 class Bridge {
   constructor(onComponent, {
     port = PORT, executable, game = {}, engine = {}, versions = {},
-    onPosition, onEval, onOverlay, onEngineStatus,
+    onPosition, onEval, onAutoMoveStatus, onOverlay, onEngineStatus,
   } = {}) {
     this.onComponent = onComponent
     this.onPosition = onPosition
     this.onEval = onEval
+    this.onAutoMoveStatus = onAutoMoveStatus
     this.onOverlay = onOverlay
     this.onEngineStatus = onEngineStatus
     this.port = port
@@ -84,6 +85,7 @@ class Bridge {
         case 'position': this.onPosition?.(data); break
         case 'overlay': this.onOverlay?.(data); break
         case 'eval': this.onEval?.(data); break
+        case 'auto-move-status': this.onAutoMoveStatus?.(data); break
         case 'engine-status': this._setStatus(data); break
         case 'fatal': failure = event.message; break
         case 'result': {

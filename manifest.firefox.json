@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chessist",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Live chess evaluation bar for Chess.com and Lichess - powered by Stockfish. Created by imluri.",
   "browser_specific_settings": {
     "gecko": {
@@ -26,13 +26,13 @@
   "content_scripts": [
     {
       "matches": ["https://www.chess.com/*"],
-      "js": ["src/content/content.js"],
+      "js": ["src/content/move-observer.js", "src/content/content.js"],
       "css": ["src/content/content.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://lichess.org/*"],
-      "js": ["src/content/lichess.js"],
+      "js": ["src/content/move-observer.js", "src/content/lichess.js"],
       "css": ["src/content/content.css"],
       "run_at": "document_idle"
     }

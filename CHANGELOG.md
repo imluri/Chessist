@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.0.3] — 2026-11-14
+
+- Lichess Instant move rechecks queued moves when the turn indicator changes. Chessist verifies the current game, position, and turn before sending input and waits while a premove is active.
+- The Evaluation page shows whether Auto-move is waiting for the browser board, the expected move appeared, the board stayed the same or changed unexpectedly, the board could not be verified, or the browser reported an input error.
+
 ## [3.0.2] — 2026-11-14
 
 - Run **Setup → Performance check** to measure the local Bun connection, Stockfish on offline positions, and sample desktop updates with Chessist in the foreground or background.

@@ -154,6 +154,7 @@ function startSubsystems() {
     },
     onPosition: (data) => sendToRenderer('position', data),
     onEval: (data) => sendToRenderer('eval', data),
+    onAutoMoveStatus: (data) => sendToRenderer('auto-move-status', data),
     onOverlay: (data) => overlay.draw(data),
     onEngineStatus: updateStockfishStatus,
   })

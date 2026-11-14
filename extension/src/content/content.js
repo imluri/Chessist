@@ -517,13 +517,30 @@
 
   // Execute a move and verify it registered; retry up to twice if not
   function _executeMoveVerified(move, positionKeyBefore) {
-    executeMove(move);
+    const attempt = autoMoveObservation?.begin({ move, before: currentFen, context: moveObservationContext() });
+    let dispatched = false;
+    const dispatch = (final) => {
+      try {
+        const sent = executeMove(move);
+        if (!dispatched && (sent || final)) {
+          autoMoveObservation?.sent(attempt, sent ? undefined : 'Browser input could not be sent.');
+        }
+        dispatched ||= sent;
+      } catch (error) {
+        if (!dispatched) autoMoveObservation?.sent(attempt, String(error));
+        throw error;
+      }
+    };
+    dispatch(false);
     setTimeout(() => {
       const currentKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
-      if (currentKey !== positionKeyBefore) return; // move registered, done
+      if (currentKey !== positionKeyBefore) {
+        if (!dispatched) autoMoveObservation?.sent(attempt, 'Browser input could not be sent.');
+        return; // move registered, done
+      }
       log('Chessist: Move not registered, retrying:', move);
       lastAutoMovePosition = null;
-      executeMove(move);
+      dispatch(true);
       // Second check: if still stuck, unblock and force re-eval
       setTimeout(() => {
         const stillKey = currentFen ? currentFen.split(' ').slice(0, 2).join(' ') : null;
@@ -773,7 +790,7 @@
   }
 
   // Parse piece positions from DOM elements
-  function parsePiecesFromDOM(board) {
+  function parsePiecesFromDOM(board, { onlyThisBoard = false } = {}) {
     // Try multiple selectors for pieces
     let pieces = board.querySelectorAll('.piece');
 
@@ -783,7 +800,7 @@
     }
 
     // Try getting pieces from the entire document if board query fails
-    if (!pieces.length) {
+    if (!pieces.length && !onlyThisBoard) {
       pieces = document.querySelectorAll('wc-chess-board .piece, chess-board .piece, .board .piece');
     }
 
@@ -1671,6 +1688,24 @@
 
   // ── Overlay WebSocket (direct, low-latency) ─────────────────────────────────
   let _overlayWs = null;
+  function moveObservationContext() {
+    return getGameId() ?? window.location.pathname;
+  }
+
+  const autoMoveObservation = globalThis.ChessistMoveObserver?.create({
+    read() {
+      const board = findBoard();
+      const premove = board?.querySelector('.premove, [class*="premove"]') ||
+                      board?.shadowRoot?.querySelector('.premove, [class*="premove"]');
+      const fen = board && !premove ? parsePiecesFromDOM(board, { onlyThisBoard: true }) : null;
+      return { fen, context: moveObservationContext() };
+    },
+    report(data) {
+      if (_overlayWs?.readyState === WebSocket.OPEN) {
+        _overlayWs.send(JSON.stringify({ type: 'auto_move_status', data }));
+      }
+    },
+  });
   let _overlayReconnectTimer = null;
   let _launchTriggered = false;
 
@@ -1836,6 +1871,7 @@
       };
       socket.onclose = () => {
         if (_overlayWs !== socket) return;
+        autoMoveObservation?.reset();
         _overlayWs = null;
         _overlayReconnectTimer = setTimeout(_connectEngineWs, 3000);
       };
@@ -2698,6 +2734,7 @@
     clearTimeout(window.evalDebounce);
     const _debounceMs = (instantMove && autoMove) ? 0 : (isMouseRelease ? 50 : 200);
     window.evalDebounce = setTimeout(() => {
+      autoMoveObservation?.observe();
       const board = findBoard();
       if (!board) {
         log('Chessist: No board found');

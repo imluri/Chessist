@@ -70,6 +70,7 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
   const engineMessages = []
   let onEngineMessage
   const intervals = new Map()
+  const observers = new Set()
   let intervalId = 0
   let now = 0
   const state = {
@@ -105,6 +106,12 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
     contains: element => boardInRound && element === board,
     querySelector,
   }
+  const element = (...classes) => ({
+    nodeType: 1,
+    matches: selector => match(selector, part =>
+      part.startsWith('.') && part.slice(1).split('.').every(name => classes.includes(name))),
+    querySelector: () => null,
+  })
   const fixture = {
     window: { location: state, addEventListener: ignore },
     document: {
@@ -140,7 +147,20 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
       },
     },
     WebSocket: { OPEN: 1 },
-    MutationObserver: class { observe() {} disconnect() {} },
+    MutationObserver: class {
+      constructor(callback) {
+        this.callback = callback
+        this.targets = new Map()
+      }
+      observe(target, options) {
+        this.targets.set(target, options)
+        observers.add(this)
+      }
+      disconnect() {
+        this.targets.clear()
+        observers.delete(this)
+      }
+    },
     matchMedia: () => ({ addEventListener: ignore }),
     Date: { now: () => now },
     setInterval: callback => {
@@ -164,6 +184,27 @@ function loadRound(pathname, { participant = false, runningClock = false, boardI
     },
     async pollPosition() {
       fixture.roundHelpers.checkForPositionChange()
+      await Promise.resolve()
+    },
+    async observeCurrentBoard() {
+      fixture.roundHelpers.observeBoard(board)
+      await Promise.resolve()
+    },
+    async mutateRound({ attributeClasses, removedClasses, addedClasses }) {
+      const record = attributeClasses
+        ? { type: 'attributes', attributeName: 'class', target: element(...attributeClasses) }
+        : {
+            type: 'childList', target: round,
+            addedNodes: addedClasses ? [element(...addedClasses)] : [],
+            removedNodes: removedClasses ? [element(...removedClasses)] : [],
+          }
+      for (const observer of observers) {
+        const options = observer.targets.get(round)
+        if (!options?.subtree || !options[record.type]) continue
+        if (options.attributeFilter && record.type === 'attributes' &&
+          !options.attributeFilter.includes(record.attributeName)) continue
+        observer.callback([record])
+      }
       await Promise.resolve()
     },
     async replaceBoard() {
@@ -384,6 +425,59 @@ describe('Lichess auto-move turn and dispatch safeguards', () => {
     round.selectors.add('.rclock-bottom.running')
     await round.pollPosition()
     expect(round.relayMessages).toEqual([expect.objectContaining({ from: 'g1', to: 'f3' })])
+  })
+
+  it('sends a queued instant move on the clock mutation without polling', async () => {
+    const round = readyRound()
+    round.selectors.delete('.rclock-bottom.running')
+    round.selectors.add('.rclock-top.running')
+    await round.observeCurrentBoard()
+    expect(round.evaluateMove(blackMovedFen, move)).toEqual([])
+
+    round.selectors.add('.rclock-bottom.running')
+    await round.mutateRound({ attributeClasses: ['rclock-bottom', 'running'] })
+    expect(round.relayMessages).toEqual([])
+
+    round.selectors.delete('.rclock-top.running')
+    await round.mutateRound({ attributeClasses: ['unrelated'] })
+    expect(round.relayMessages).toEqual([])
+
+    await round.mutateRound({ attributeClasses: ['rclock-top'] })
+    await round.mutateRound({ attributeClasses: ['rclock-bottom', 'running'] })
+    expect(round.relayMessages).toEqual([expect.objectContaining({
+      type: 'EXECUTE_MOVE', from: 'g1', to: 'f3', instant: true, singleAttempt: true,
+    })])
+  })
+
+  it('rechecks an instant move when the untimed turn indicator is inserted', async () => {
+    const round = readyRound()
+    round.selectors.delete('.rclock-bottom.running')
+    round.selectors.add('.rclock-top.rclock-turn .rclock-turn__text')
+    await round.observeCurrentBoard()
+    expect(round.evaluateMove(blackMovedFen, move)).toEqual([])
+
+    round.selectors.delete('.rclock-top.rclock-turn .rclock-turn__text')
+    round.selectors.add('.rclock-bottom.rclock-turn .rclock-turn__text')
+    await round.mutateRound({ removedClasses: ['rclock-turn__text'], addedClasses: ['rclock-turn__text'] })
+    expect(round.relayMessages).toHaveLength(1)
+  })
+
+  it.each([
+    ['a visible premove', round => { round.selectors.add('square.current-premove') }],
+    ['another game', round => { round.state.pathname = '/game/00000000' }],
+    ['a different position', round => { round.state.fen = whiteTurnAgainFen }],
+  ])('withholds the queued instant move on a clock change with %s', async (_, change) => {
+    const round = readyRound()
+    round.selectors.delete('.rclock-bottom.running')
+    round.selectors.add('.rclock-top.running')
+    await round.observeCurrentBoard()
+    expect(round.evaluateMove(blackMovedFen, move)).toEqual([])
+
+    change(round)
+    round.selectors.delete('.rclock-top.running')
+    round.selectors.add('.rclock-bottom.running')
+    await round.mutateRound({ attributeClasses: ['rclock-bottom', 'running'] })
+    expect(round.relayMessages).toEqual([])
   })
 
   it('retains the next position’s ready evaluation while a previous relay is in flight', async () => {

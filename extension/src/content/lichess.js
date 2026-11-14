@@ -7,6 +7,7 @@
   const STARTING_PLACEMENT = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
   const STARTING_FEN = `${STARTING_PLACEMENT} w KQkq - 0 1`;
   const PREMOVE_SELECTOR = 'piece.premove, square.premove, square.current-premove';
+  const TURN_CLOCK_SELECTOR = '.rclock-white, .rclock-black, .rclock-top, .rclock-bottom, .clock, .rclock-turn__text';
 
   let evalBar = null;
   let evalBarFill = null;
@@ -32,6 +33,7 @@
   let evalWatchdogKey = null;
   let manualPlayerColor = 'auto';
   let boardObserver = null;
+  let turnObserver = null;
   let observedRoundBoard = null;
   let boardPollInterval = null;
   let arrowOverlay = null;
@@ -984,6 +986,21 @@
 
   // ── Overlay WebSocket (direct, low-latency) ─────────────────────────────────
   let _overlayWs = null;
+  const autoMoveObservation = globalThis.ChessistMoveObserver?.create({
+    read() {
+      const context = getGameId();
+      const board = findBoard();
+      const fen = context && roundForBoard(board) && !hasActivePremove(getBoardSurface(board))
+        ? parsePiecesFromDOM(board)
+        : null;
+      return { fen, context };
+    },
+    report(data) {
+      if (_overlayWs?.readyState === WebSocket.OPEN) {
+        _overlayWs.send(JSON.stringify({ type: 'auto_move_status', data }));
+      }
+    },
+  });
 
   function reportAutoMove(stage, data = {}) {
     log('Chessist auto-move:', stage, data);
@@ -1138,6 +1155,7 @@
       };
       socket.onclose = () => {
         if (_overlayWs !== socket) return;
+        autoMoveObservation?.reset();
         clearTimeout(evalWatchdogTimer);
         evalWatchdogTimer = null;
         evalWatchdogKey = null;
@@ -1728,13 +1746,16 @@
     autoMoveExecuting = true;
     lastAutoMovePosition = moveKey;
     const moveMode = instantMove ? 'drag' : 'click';
-
+    let attempt;
     try {
+      attempt = autoMoveObservation?.begin({ move, before: currentFen, context: gameId });
       reportAutoMove(`execute-${moveMode}-primary`, { move, position: positionKeyBefore });
       // A missing or failed reply can follow partial input. Do not resend it.
-      await executeMove(move, moveMode);
+      const response = await executeMove(move, moveMode);
+      autoMoveObservation?.sent(attempt, response?.success ? undefined : response?.error || 'No successful input reply.');
     } catch (error) {
       reportAutoMove('execute-error', { move, error: String(error) });
+      autoMoveObservation?.sent(attempt, String(error));
     } finally {
       autoMoveExecuting = false;
     }
@@ -1762,6 +1783,7 @@
       cdpError: response?.cdpError || null,
       error: response?.error || null
     });
+    return response;
   }
 
   // ============================================================
@@ -1772,6 +1794,7 @@
     if (board === observedRoundBoard) return;
     observedRoundBoard = board;
     boardObserver?.disconnect();
+    turnObserver?.disconnect();
 
     checkForPositionChange(false);
 
@@ -1794,6 +1817,20 @@
       attributes: true,
       attributeFilter: ['class']
     });
+
+    // Lichess can mark the active clock after the pieces have settled.
+    const round = roundForBoard(board);
+    if (round) {
+      const containsClock = node => node.matches?.(TURN_CLOCK_SELECTOR) || node.querySelector?.(TURN_CLOCK_SELECTOR);
+      turnObserver = new MutationObserver(records => {
+        if (!instantMove || !pendingAutoMove) return;
+        const clockChanged = records.some(record => record.type === 'attributes'
+          ? record.target.matches?.(TURN_CLOCK_SELECTOR)
+          : [...record.addedNodes, ...record.removedNodes].some(containsClock));
+        if (clockChanged) checkForPositionChange(false);
+      });
+      turnObserver.observe(round, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+    }
 
     // Poll fallback — safety net only
     boardPollInterval ??= setInterval(() => checkForPositionChange(false), 250);
@@ -1830,6 +1867,7 @@
     // wait briefly so we never evaluate a half-moved/temporarily missing piece.
     const _debounceMs = instantMove ? (isMouseRelease ? 3 : 8) : (isMouseRelease ? 25 : 45);
     window.evalDebounce = setTimeout(() => {
+      autoMoveObservation?.observe();
       const board = findBoard();
       if (!board) { log('Chessist: No board found'); return; }
 

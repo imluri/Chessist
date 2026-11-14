@@ -63,4 +63,9 @@ contextBridge.exposeInMainWorld('chessist', {
     ipcRenderer.on('position', h)
     return () => ipcRenderer.removeListener('position', h)
   },
+  onAutoMoveStatus: (cb) => {
+    const h = (_e, payload) => cb(payload)
+    ipcRenderer.on('auto-move-status', h)
+    return () => ipcRenderer.removeListener('auto-move-status', h)
+  },
 })

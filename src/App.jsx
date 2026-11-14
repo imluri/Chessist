@@ -33,6 +33,7 @@ const windowControls = {
 export default function App() {
   const [status, setStatus] = useState({ stockfishOk: false, stockfishState: 'starting', overlayOk: false, extensionConnected: false, extensionUpdateAvailable: false, chessConnected: false, chessSite: null, message: '' })
   const [ev, setEv] = useState(null)
+  const [autoMoveStatus, setAutoMoveStatus] = useState(null)
   const [pos, setPos] = useState(null)        // { fen, flipped } — authoritative current position
   const [page, setPage] = useState('evaluation')
   const [updateStatus, setUpdateStatus] = useState(null)
@@ -106,6 +107,7 @@ export default function App() {
     const offS = window.chessist.onStatus((nextStatus) => {
       setStatus(nextStatus)
       if (nextStatus.stockfishState !== 'ready') setEv(null)
+      if (!nextStatus.chessConnected) setAutoMoveStatus(null)
     })
     const offP = window.chessist.onPosition?.((p) => {
       posRef.current = p
@@ -117,9 +119,10 @@ export default function App() {
       if (cur && e.fen && piecesKey(e.fen) !== piecesKey(cur)) return
       setEv(e)
     })
+    const offMove = window.chessist.onAutoMoveStatus?.(setAutoMoveStatus)
     // Auto-check for updates on launch.
     window.chessist.checkUpdate?.().then(setUpdateStatus).catch(() => {})
-    return () => { offS(); offE(); offP && offP() }
+    return () => { offS(); offE(); offP?.(); offMove?.() }
   }, [])
 
   const updateAvailable = !!updateStatus?.available
@@ -146,7 +149,7 @@ export default function App() {
     >
       <div key={page} className={page === 'evaluation' ? 'chessist-evaluation' : undefined}>
         {page === 'evaluation' && <EvaluationPage ev={ev} pos={pos} status={status} gameSettings={settings.game}
-          onOpenSetup={() => setPage('setup')} />}
+          autoMoveStatus={autoMoveStatus} onOpenSetup={() => setPage('setup')} />}
         {page === 'setup' && <SetupPage status={status} />}
         {page === 'settings' && <ChessistSettings gameSettings={settings.game} engineSettings={settings.engine}
           onGameChange={(key, value) => changeSetting('game', key, value)}

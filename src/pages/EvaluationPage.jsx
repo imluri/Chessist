@@ -8,6 +8,23 @@ const STOCKFISH_LABELS = {
   downloading: 'Downloading Stockfish…',
   error: 'Stockfish unavailable',
 }
+const AUTO_MOVE_LABELS = {
+  sending: 'Waiting for the browser board…',
+  confirmed: 'Expected move appeared on the browser board.',
+  unchanged: 'The browser board was still on the same position when the check ended.',
+  changed: 'The board advanced without confirming the expected move.',
+  unverified: 'The browser board could not be verified.',
+  dispatch_error: 'The browser reported an input error and the move was not confirmed.',
+}
+
+function AutoMoveStatus({ status }) {
+  const label = AUTO_MOVE_LABELS[status?.state]
+  const move = status?.move
+  const promotion = move?.length === 5 ? `=${move[4].toUpperCase()}` : ''
+  return <div role="status" aria-atomic="true" style={{ color: 'rgb(var(--fg-muted))' }}>
+    {label && <><strong>Auto-move {move.slice(0, 2)} → {move.slice(2, 4)}{promotion}.</strong> {label}</>}
+  </div>
+}
 
 // Locate a side's king on the board, e.g. ('…', 'w') → 'e1'. Returns null if absent.
 function kingSquare(fen, color) {
@@ -32,7 +49,7 @@ function arrowsFromEval(ev, showAltArrows) {
     .map((m, i) => ({ from: m.slice(0, 2), to: m.slice(2, 4), idx: i }))
 }
 
-export default function EvaluationPage({ ev, pos, status, gameSettings, onOpenSetup }) {
+export default function EvaluationPage({ ev, pos, status, gameSettings, autoMoveStatus, onOpenSetup }) {
   const chessOn = status.chessConnected        // a chess tab is active
   const extOn = status.extensionConnected      // extension installed (service worker)
   const boardFen = pos?.fen || ev?.fen || START_FEN
@@ -117,6 +134,7 @@ export default function EvaluationPage({ ev, pos, status, gameSettings, onOpenSe
 
       <div style={{ flexShrink: 0, textAlign: 'center', fontSize: 12, color: 'rgb(var(--fg-dim))', lineHeight: 1.6, minHeight: 18 }}>
         {hint}
+        <AutoMoveStatus status={autoMoveStatus} />
       </div>
     </div>
   )
