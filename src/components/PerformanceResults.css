@@ -1,0 +1,56 @@
+.performance-results {
+  margin-top: 15px;
+  font-size: 12px;
+}
+
+.performance-results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.performance-results-table caption {
+  margin-bottom: 5px;
+  color: rgb(var(--fg));
+  text-align: left;
+  font-weight: 650;
+}
+
+.performance-results-table th,
+.performance-results-table td {
+  border-bottom: 1px solid rgb(var(--border));
+  padding: 7px 0 7px 12px;
+  text-align: right;
+}
+
+.performance-results-table th:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.performance-results-table thead th {
+  color: rgb(var(--fg-muted));
+}
+
+.performance-results-table tbody th {
+  font-weight: 550;
+}
+
+.performance-results-table td {
+  white-space: nowrap;
+}
+
+.performance-results p,
+.performance-results ul,
+.performance-unavailable {
+  color: rgb(var(--fg-muted));
+}
+
+.performance-results p {
+  margin-top: 9px;
+}
+
+.performance-results ul {
+  margin: 7px 0 0;
+  padding-left: 17px;
+}

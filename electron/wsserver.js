@@ -89,7 +89,7 @@ class Bridge {
         case 'result': {
           const request = worker.pending.get(event.requestId)
           if (!request) break
-          if (event.ok) request.resolve()
+          if (event.ok) request.resolve(data)
           else request.reject(new Error(event.error || 'Stockfish command failed.'))
           break
         }
@@ -167,13 +167,27 @@ class Bridge {
     const worker = this.worker
     if (!worker) return
     if (worker.stopping) return worker.closed
+    return this._request({ type: 'engine-kill' }, 5000)
+  }
+
+  benchmarkStockfish() {
+    if (!this.enginePath) throw new Error('Stockfish is not installed.')
+    return this._request({ type: 'performance-stockfish', path: this.enginePath }, 30000, 'performance-cancel')
+  }
+
+  async _request(command, timeoutMs, cancelType) {
+    const worker = this.worker
+    if (!worker || worker.stopping) throw new Error('The local service is unavailable.')
     const requestId = this.nextRequestId++
     let timeout
     try {
-      await new Promise((resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         worker.pending.set(requestId, { resolve, reject })
-        timeout = setTimeout(() => reject(new Error('Timed out while stopping Stockfish.')), 5000)
-        if (!this._send({ type: 'engine-kill', requestId })) reject(new Error('The local service stopped.'))
+        timeout = setTimeout(() => {
+          if (cancelType && this.worker === worker) this._send({ type: cancelType, requestId })
+          reject(new Error('The local service did not finish the request in time.'))
+        }, timeoutMs)
+        if (!this._send({ ...command, requestId })) reject(new Error('The local service stopped.'))
       })
     } finally {
       clearTimeout(timeout)

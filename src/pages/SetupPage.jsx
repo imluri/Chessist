@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import PerformanceResults from '../components/PerformanceResults'
 
 const btn = {
   padding: '7px 12px', fontSize: 12, fontWeight: 600, borderRadius: 'var(--radius-sm)',
@@ -11,6 +12,10 @@ const STATUS = {
   working: { color: 'rgb(var(--status-yellow))', glow: '0 0 6px rgba(234,179,8,0.7)' },
   error:   { color: 'rgb(var(--status-red))',    glow: 'none' },
   off:     { color: 'rgb(var(--fg-dim))',        glow: 'none' },
+}
+
+function operationError(error, fallback) {
+  return error?.message?.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') || fallback
 }
 
 // A self-contained module "window": header (title + status) and a body.
@@ -30,9 +35,17 @@ function ModuleCard({ title, state, statusLabel, children }) {
 
 function StockfishModule({ status }) {
   const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
   const redownload = async () => {
     setBusy(true)
-    try { await window.chessist.redownloadStockfish() } finally { setBusy(false) }
+    setActionError('')
+    try {
+      await window.chessist.redownloadStockfish()
+    } catch (error) {
+      setActionError(operationError(error, 'Could not re-download Stockfish.'))
+    } finally {
+      setBusy(false)
+    }
   }
   const { stockfishState, message } = status
   const failed = stockfishState === 'error'
@@ -53,6 +66,7 @@ function StockfishModule({ status }) {
       <button onClick={redownload} disabled={disabled} style={{ ...btn, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}>
         {busy ? 'Re-downloading…' : 'Re-download Stockfish'}
       </button>
+      {actionError && <p role="alert" style={{ color: STATUS.error.color, fontSize: 12, marginTop: 8 }}>{actionError}</p>}
     </ModuleCard>
   )
 }
@@ -66,6 +80,117 @@ function OverlayModule({ status }) {
           ? 'The transparent, screen-capture-invisible overlay helper is running. Pick "Overlay" render mode on the Game tab to draw on the board.'
           : 'Overlay helper not found. Build it with "npm run build:overlay" (dev) or reinstall the app. The In-page and App render modes still work without it.'}
       </p>
+    </ModuleCard>
+  )
+}
+
+const PERFORMANCE_PHASES = {
+  local: 'Measuring the local connection…',
+  stockfish: 'Analyzing offline positions with Stockfish…',
+  foreground: 'Keep Chessist in front while it measures desktop updates.',
+  background: 'Optional: switch to another window for background samples. Keep Chessist visible beside it.',
+}
+
+function isScoreVisible(element) {
+  if (!element || document.visibilityState !== 'visible') return false
+  const bounds = element.getBoundingClientRect()
+  const scroll = element.closest('.main-scroll')?.getBoundingClientRect()
+  return bounds.width > 0 && bounds.height > 0 &&
+    bounds.top >= Math.max(0, scroll?.top ?? 0) &&
+    bounds.left >= Math.max(0, scroll?.left ?? 0) &&
+    bounds.bottom <= Math.min(innerHeight, scroll?.bottom ?? innerHeight) &&
+    bounds.right <= Math.min(innerWidth, scroll?.right ?? innerWidth)
+}
+
+function PerformanceModule() {
+  const [running, setRunning] = useState(false)
+  const [phase, setPhase] = useState('')
+  const [frame, setFrame] = useState(null)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const score = useRef(null)
+
+  useEffect(() => {
+    if (phase === 'foreground') score.current?.scrollIntoView({ block: 'nearest' })
+  }, [phase])
+
+  useEffect(() => {
+    const offPhase = window.chessist.onPerformancePhase?.(setPhase)
+    const offFrame = window.chessist.onPerformanceFrame?.(({ id, score: value }) => setFrame({
+      id, value, focused: document.hasFocus(), visible: document.visibilityState === 'visible',
+    }))
+    return () => {
+      offPhase?.()
+      offFrame?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!frame) return
+    let nextPaint
+    const firstPaint = requestAnimationFrame(() => {
+      nextPaint = requestAnimationFrame(() => {
+        const focused = document.hasFocus()
+        window.chessist.finishPerformanceFrame?.(frame.id, {
+          focused,
+          visible: frame.visible && frame.focused === focused && isScoreVisible(score.current),
+        })
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstPaint)
+      if (nextPaint !== undefined) cancelAnimationFrame(nextPaint)
+    }
+  }, [frame])
+
+  async function runCheck() {
+    setRunning(true)
+    setPhase('local')
+    setFrame(null)
+    setResult(null)
+    setError('')
+    try {
+      setResult(await window.chessist.runPerformanceCheck())
+    } catch (failure) {
+      setError(operationError(failure, 'The performance check could not finish.'))
+    } finally {
+      setRunning(false)
+      setPhase('')
+      setFrame(null)
+    }
+  }
+
+  const state = running ? 'working' : error ? 'error' : result ? 'ok' : 'off'
+  const label = running ? 'running' : error ? 'failed' : result ? 'complete' : 'ready to run'
+  const description = { color: 'rgb(var(--fg-muted))', fontSize: 12, lineHeight: 1.6 }
+
+  return (
+    <ModuleCard title="Performance check" state={state} statusLabel={label}>
+      <p style={description}>
+        Measure the local Bun connection, Stockfish on offline positions, and desktop update latency. Results stay on this PC.
+      </p>
+      <p style={{ ...description, marginTop: 6 }}>
+        This check measures local work. For site and network latency, use Lichess’s lag check. Keep Chessist in front until asked to switch windows.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+        <button type="button" disabled={running} onClick={runCheck} style={{
+          ...btn, background: 'rgb(var(--accent))', borderColor: 'transparent', color: '#fff',
+          opacity: running ? .55 : 1, cursor: running ? 'default' : 'pointer',
+        }}>
+          {running ? 'Running check…' : result ? 'Run again' : 'Run performance check'}
+        </button>
+        <button type="button" disabled={running} onClick={() => window.chessist.openExternal('https://lichess.org/lag')} style={btn}>
+          Open Lichess lag check
+        </button>
+      </div>
+      {running && <p role="status" style={{ ...description, marginTop: 8 }}>{PERFORMANCE_PHASES[phase] || 'Collecting local timing samples…'}</p>}
+      {running && (phase === 'foreground' || phase === 'background') && (
+        <p style={{ ...description, marginTop: 4 }}>
+          Sample evaluation <span ref={score} style={{ color: 'rgb(var(--fg))', fontVariantNumeric: 'tabular-nums' }}>{frame?.value ?? '—'}</span>
+        </p>
+      )}
+      {error && <p role="alert" style={{ ...description, color: STATUS.error.color, marginTop: 8 }}>{error}</p>}
+      {result && <PerformanceResults result={result} />}
     </ModuleCard>
   )
 }
@@ -173,9 +298,10 @@ export default function SetupPage({ status }) {
     <div className="page-content">
       <header className="page-heading">
         <h1>Setup</h1>
-        <p>Manage Stockfish, the overlay, and your browser extension.</p>
+        <p>Manage Stockfish, the overlay, and your browser extension. Check local performance.</p>
       </header>
       <StockfishModule status={status} />
+      <PerformanceModule />
       <OverlayModule status={status} />
       <ExtensionModule status={status} />
     </div>

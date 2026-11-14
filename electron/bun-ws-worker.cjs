@@ -1,6 +1,7 @@
 const { createInterface } = require('node:readline')
 const { write } = require('node:fs')
 const { Engine } = require('./engine')
+const { benchmarkStockfish } = require('./performance-stockfish')
 
 const MAX_PAYLOAD = 256 * 1024
 const MAX_PENDING_OVERLAY_BYTES = 1024 * 1024
@@ -19,6 +20,29 @@ let heartbeat
 let stopping = false
 let outputBlocked = false
 let pendingOverlayBytes = 0
+let benchmark
+
+const BENCHMARK_BOARD_ERROR = 'Close chess boards connected to Chessist before running the Stockfish benchmark.'
+
+function runBenchmark({ requestId, path }) {
+  if (contentClients.size || benchmark) {
+    const error = contentClients.size ? BENCHMARK_BOARD_ERROR : 'The Stockfish benchmark is already running.'
+    report({ type: 'result', requestId, ok: false, error })
+    return
+  }
+  const controller = new AbortController()
+  const run = { requestId, controller, done: null }
+  benchmark = run
+  run.done = benchmarkStockfish(path, controller.signal).then(
+    data => report({ type: 'result', requestId, ok: true, data }),
+    error => report({ type: 'result', requestId, ok: false, error: error.message }),
+  ).finally(() => { benchmark = null })
+}
+
+async function stopEngines(reason) {
+  benchmark?.controller.abort(new Error(reason))
+  await Promise.all([engine.kill(), benchmark?.done])
+}
 
 function report(event) {
   if (stopping) return
@@ -116,6 +140,7 @@ function setGameSettings(data) {
 
 function identify(socket, message) {
   if (message.role === 'content') {
+    benchmark?.controller.abort(new Error(BENCHMARK_BOARD_ERROR))
     contentClients.set(socket, typeof message.site === 'string' ? message.site : null)
     if (gameSettings) socket.sendText(JSON.stringify({ type: 'settings', data: gameSettings }))
   } else if (message.role === 'extension') {
@@ -158,6 +183,9 @@ function onMessage(socket, raw) {
   switch (message.type) {
     case 'get_status':
       socket.sendText(JSON.stringify({ type: 'app_status', stockfishState }))
+      return
+    case 'performance_ping':
+      if (Number.isSafeInteger(message.id)) socket.sendText(JSON.stringify({ type: 'performance_pong', id: message.id }))
       return
     case 'identify':
       identify(socket, message)
@@ -251,7 +279,7 @@ async function stop(code = 0) {
   process.stdin.pause()
   process.exitCode = code
   for (const server of servers) server.stop(true)
-  try { await engine.kill() } catch { process.exitCode = 1 }
+  try { await stopEngines('Chessist is shutting down.') } catch { process.exitCode = 1 }
 }
 
 process.stdin.on('error', () => stop(1))
@@ -283,7 +311,7 @@ input.on('line', (line) => {
       }
       break
     case 'engine-kill':
-      engine.kill().then(
+      stopEngines('Stockfish is restarting.').then(
         () => report({ type: 'result', requestId: command.requestId, ok: true }),
         error => report({ type: 'result', requestId: command.requestId, ok: false, error: error.message })
       )
@@ -296,6 +324,14 @@ input.on('line', (line) => {
       break
     case 'stockfish-status':
       updateStockfishStatus(command)
+      break
+    case 'performance-stockfish':
+      runBenchmark(command)
+      break
+    case 'performance-cancel':
+      if (benchmark?.requestId === command.requestId) {
+        benchmark.controller.abort(new Error('The Stockfish benchmark was cancelled.'))
+      }
       break
     case 'stop':
       void stop()

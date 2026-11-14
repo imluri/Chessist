@@ -11,6 +11,18 @@ contextBridge.exposeInMainWorld('chessist', {
   getSidebarShortcuts: () => ipcRenderer.invoke('sidebar:get-shortcuts'),
   setSidebarShortcuts: (ids) => ipcRenderer.invoke('sidebar:set-shortcuts', ids),
   redownloadStockfish: () => ipcRenderer.invoke('stockfish:redownload'),
+  runPerformanceCheck: () => ipcRenderer.invoke('performance:run'),
+  onPerformancePhase: (cb) => {
+    const listener = (_event, phase) => cb(phase)
+    ipcRenderer.on('performance:phase', listener)
+    return () => ipcRenderer.removeListener('performance:phase', listener)
+  },
+  onPerformanceFrame: (cb) => {
+    const listener = (_event, frame) => cb(frame)
+    ipcRenderer.on('performance:frame', listener)
+    return () => ipcRenderer.removeListener('performance:frame', listener)
+  },
+  finishPerformanceFrame: (id, result) => ipcRenderer.send('performance:frame-finished', id, result),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   getExtensionPath: () => ipcRenderer.invoke('extension:path'),
   revealExtensionFolder: () => ipcRenderer.invoke('extension:reveal'),

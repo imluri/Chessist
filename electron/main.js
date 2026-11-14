@@ -5,6 +5,7 @@ const { ensureStockfish } = require('./stockfish')
 const { engineSettingsDefaults } = require('./engine')
 const { Overlay } = require('./overlay')
 const { Bridge } = require('./wsserver')
+const { PerformanceCheck } = require('./performance-check')
 const updater = require('./updater')
 
 // --prod (or CHESSIST_PROD=1) forces production mode when running unpacked from
@@ -19,6 +20,7 @@ let stockfishTask = null
 let updateInProgress = false
 let quitting = false
 let shutdownFinished = false
+let performanceCheck = null
 
 // ── Settings persistence (userData/chessist-settings.json) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
@@ -214,7 +216,24 @@ function registerIpc() {
     appPrefs.sidebarShortcuts = previous
     throw new Error('Could not save shortcuts.')
   })
-  ipcMain.handle('stockfish:redownload', () => prepareStockfish(true))
+  ipcMain.handle('stockfish:redownload', () => {
+    if (performanceCheck) throw new Error('Wait for the performance check to finish.')
+    return prepareStockfish(true)
+  })
+  ipcMain.handle('performance:run', async (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Open Setup to run a performance check.')
+    if (performanceCheck) throw new Error('A performance check is already running.')
+    const check = new PerformanceCheck(mainWindow, bridge)
+    performanceCheck = check
+    try {
+      return await check.run({ skipStockfish: !!stockfishTask || componentStatus.chessConnected })
+    } finally {
+      performanceCheck = null
+    }
+  })
+  ipcMain.on('performance:frame-finished', (event, id, result) => {
+    performanceCheck?.finishFrame(event.sender, id, result)
+  })
   ipcMain.handle('update:get-beta', () => appPrefs.betaUpdates)
   ipcMain.handle('update:set-beta', (_e, beta) => { appPrefs.betaUpdates = !!beta; saveAll(); return appPrefs.betaUpdates })
   ipcMain.handle('update:check', () => updater.checkForUpdate(appPrefs.betaUpdates))

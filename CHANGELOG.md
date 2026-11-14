@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.0.2] — 2026-11-14
+
+- Run **Setup → Performance check** to measure the local Bun connection, Stockfish on offline positions, and sample desktop updates with Chessist in the foreground or background.
+- See median and 95th-percentile timings and sample counts. Use the Lichess lag check link to measure your connection to the site separately.
+
 ## [3.0.1] — 2026-11-14
 
 - Move the local WebSocket service and native Stockfish process into a Bun worker. The extension sends analysis requests and receives results directly through that worker.
