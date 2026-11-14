@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.0.1] — 2026-11-14
+
+- Move the local WebSocket service and native Stockfish process into a Bun worker. The extension sends analysis requests and receives results directly through that worker.
+- Restore saved settings when the worker restarts and show local connection errors in **Setup → Browser extension**.
+- Bundle the Bun worker in the Windows x64 installer. No separate Bun installation is required.
+
 ## [3.0.0] — 2026-11-14
 
 - Introduce a redesigned title bar, sidebar, and Settings panel built on the reusable desktop UI template.

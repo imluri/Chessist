@@ -20,6 +20,16 @@ function defaultHashMb() {
   return Math.max(128, Math.min(1024, Math.floor(freeMb / 8)))
 }
 
+function engineSettingsDefaults(opts = {}) {
+  return {
+    skillLevel: opts.skillLevel ?? 20,
+    limitStrength: opts.limitStrength ?? false,
+    elo: opts.elo ?? 1500,
+    threads: opts.threads || Math.max(1, os.cpus().length - 1),
+    hash: opts.hashMb || defaultHashMb(),
+  }
+}
+
 class Engine {
   constructor(onEval, onStatus, opts = {}) {
     this.onEval = onEval
@@ -39,18 +49,12 @@ class Engine {
     this._restartTimer = null
     this._lastRequest = null  // replay after startup or an engine restart
     this._pendingOptions = new Map()
-    this.hashMb = opts.hashMb || defaultHashMb()
-    this.threads = opts.threads || Math.max(1, os.cpus().length - 1)
     // Engine settings owned by the desktop app (Engine page). Re-applied on every
     // (re)start so they persist across engine restarts. Depth/MultiPV stay
     // extension-driven and are NOT stored here.
-    this.settings = {
-      skillLevel: opts.skillLevel ?? 20,
-      limitStrength: opts.limitStrength ?? false,
-      elo: opts.elo ?? 1500,
-      threads: this.threads,
-      hash: this.hashMb,
-    }
+    this.settings = engineSettingsDefaults(opts)
+    this.hashMb = this.settings.hash
+    this.threads = this.settings.threads
   }
 
   start(stockfishPath) {
@@ -286,4 +290,4 @@ class Engine {
   }
 }
 
-module.exports = { parseInfoLine, defaultHashMb, Engine }
+module.exports = { parseInfoLine, defaultHashMb, engineSettingsDefaults, Engine }

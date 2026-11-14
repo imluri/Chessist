@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, Menu, shell, clipboard } = require('electro
 const path = require('path')
 const fs = require('fs')
 const { ensureStockfish } = require('./stockfish')
-const { Engine } = require('./engine')
+const { engineSettingsDefaults } = require('./engine')
 const { Overlay } = require('./overlay')
 const { Bridge } = require('./wsserver')
 const updater = require('./updater')
@@ -13,11 +13,12 @@ const updater = require('./updater')
 const forceProd = process.argv.includes('--prod') || process.env.CHESSIST_PROD === '1'
 const isDev = !app.isPackaged && !forceProd
 let mainWindow = null
-let engine = null
 let overlay = null
 let bridge = null
 let stockfishTask = null
 let updateInProgress = false
+let quitting = false
+let shutdownFinished = false
 
 // ── Settings persistence (userData/chessist-settings.json) ──
 // Game/display settings owned by the app and pushed to the extension over WS.
@@ -49,10 +50,11 @@ const gameSettings = {
 
 // App-level preferences (update channel, etc.).
 const appPrefs = { betaUpdates: false, sidebarShortcuts: [] }
+const engineSettings = engineSettingsDefaults()
 
 function normalizeSidebarShortcuts(ids) {
   if (!Array.isArray(ids)) return []
-  const settings = { game: gameSettings, engine: engine?.getSettings() ?? {} }
+  const settings = { game: gameSettings, engine: engineSettings }
   return [...new Set(ids.filter(id => {
     if (typeof id !== 'string') return false
     const [scope, key, extra] = id.split('.')
@@ -64,11 +66,11 @@ function settingsPath() { return path.join(app.getPath('userData'), 'chessist-se
 function loadAll() {
   try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) || {} } catch { return {} }
 }
-function saveAll({ engine: engineSettings = engine?.getSettings() ?? {}, game = gameSettings } = {}) {
+function saveAll({ engine = engineSettings, game = gameSettings } = {}) {
   const file = settingsPath()
   const temp = file + '.tmp'
   try {
-    fs.writeFileSync(temp, JSON.stringify({ engine: engineSettings, game, app: appPrefs }, null, 2))
+    fs.writeFileSync(temp, JSON.stringify({ engine, game, app: appPrefs }, null, 2))
     fs.renameSync(temp, file)
     return true
   } catch {
@@ -85,6 +87,7 @@ const componentStatus = {
   extensionUpdateAvailable: false,
   chessConnected: false,       // a chess tab (content script) is active
   chessSite: null,             // 'Chess.com' | 'Lichess' when a chess tab is active
+  wsError: null,
   message: '',
 }
 
@@ -102,7 +105,6 @@ function pushStatus(patch) {
 function updateStockfishStatus({ status, message }) {
   const ready = status === 'ready'
   pushStatus({ stockfishOk: ready, stockfishState: status, message: ready ? '' : message })
-  bridge?.broadcastStatus({ status, message })
 }
 
 function createWindow() {
@@ -131,26 +133,29 @@ function createWindow() {
 
 function startSubsystems() {
   overlay = new Overlay(isDev, process.resourcesPath, (s) => pushStatus(s))
-  engine = new Engine(
-    (ev) => { bridge?.broadcastEval(ev); sendToRenderer('eval', ev) },
-    updateStockfishStatus
-  )
   // Restore saved settings before first start (engine applied on uciok).
   const saved = loadAll()
-  Object.assign(engine.settings, saved.engine || {})
+  for (const key of Object.keys(engineSettings)) {
+    if (Object.hasOwn(saved.engine || {}, key)) engineSettings[key] = saved.engine[key]
+  }
   Object.assign(gameSettings, saved.game || {})
   Object.assign(appPrefs, saved.app || {})
   appPrefs.sidebarShortcuts = normalizeSidebarShortcuts(appPrefs.sidebarShortcuts)
-  bridge = new Bridge(engine, overlay, (c) => pushStatus(c))
-  bridge.getGameSettings = () => gameSettings
-  bridge.getStockfishState = () => componentStatus.stockfishState
-  const extensionVersions = {
-    chromium: readExtensionVersion(extensionDir()),
-    firefox: readExtensionVersion(firefoxDir()),
-  }
-  bridge.getBundledExtensionVersion = (browser) => extensionVersions[browser]
-  bridge.onPosition = (p) => sendToRenderer('position', p)
-  bridge.start()
+  const executable = app.isPackaged ? path.join(process.resourcesPath, 'bun-ws-worker.exe') : undefined
+  bridge = new Bridge(pushStatus, {
+    executable,
+    game: gameSettings,
+    engine: engineSettings,
+    versions: {
+      chromium: readExtensionVersion(extensionDir()),
+      firefox: readExtensionVersion(firefoxDir()),
+    },
+    onPosition: (data) => sendToRenderer('position', data),
+    onEval: (data) => sendToRenderer('eval', data),
+    onOverlay: (data) => overlay.draw(data),
+    onEngineStatus: updateStockfishStatus,
+  })
+  bridge.start().catch(() => {}) // The bridge reports startup failures through component status.
   overlay.start()
 
   prepareStockfish()
@@ -159,17 +164,18 @@ function startSubsystems() {
 function prepareStockfish(redownload = false) {
   if (stockfishTask) return stockfishTask
   stockfishTask = (async () => {
+    const report = (status) => bridge.broadcastStatus(status)
     try {
       const userData = app.getPath('userData')
       if (redownload) {
-        updateStockfishStatus({ status: 'downloading', message: 'Stockfish: re-downloading…' })
-        await engine.kill()
+        report({ status: 'downloading', message: 'Stockfish: re-downloading…' })
+        await bridge.killEngine()
         fs.rmSync(path.join(userData, 'stockfish.exe'), { force: true })
       }
-      const sfPath = await ensureStockfish(userData, updateStockfishStatus)
-      if (sfPath) engine.start(sfPath)
+      const sfPath = await ensureStockfish(userData, report)
+      if (sfPath && !quitting) bridge.startEngine(sfPath)
     } catch (e) {
-      updateStockfishStatus({ status: 'error', message: `Stockfish setup failed: ${e.message}` })
+      if (!quitting) report({ status: 'error', message: `Stockfish setup failed: ${e.message}` })
     }
   })().finally(() => { stockfishTask = null })
   return stockfishTask
@@ -184,13 +190,13 @@ function registerIpc() {
   })
   ipcMain.on('window:close', () => mainWindow?.close())
   ipcMain.handle('status:get', () => componentStatus)
-  ipcMain.handle('engine:get', () => engine?.getSettings() ?? {})
+  ipcMain.handle('engine:get', () => engineSettings)
   ipcMain.handle('engine:set', (_e, { key, value }) => {
-    const current = engine?.getSettings()
-    if (!current || !Object.hasOwn(current, key)) throw new Error('Unknown engine setting.')
-    if (!saveAll({ engine: { ...current, [key]: value } })) throw new Error('Could not save engine settings.')
-    engine.applySetting(key, value)
-    return engine.getSettings()
+    if (!Object.hasOwn(engineSettings, key)) throw new Error('Unknown engine setting.')
+    if (!saveAll({ engine: { ...engineSettings, [key]: value } })) throw new Error('Could not save engine settings.')
+    engineSettings[key] = value
+    bridge?.applyEngineSetting(key, value)
+    return engineSettings
   })
   ipcMain.handle('game:get', () => gameSettings)
   ipcMain.handle('game:set', (_e, { key, value }) => {
@@ -219,7 +225,7 @@ function registerIpc() {
     try {
       result = await updater.applyUpdate(appPrefs.betaUpdates, (line) => sendToRenderer('update:log', line), expectedTag)
       if (result.installer) setImmediate(() => app.quit())
-      else if (result.ok) setTimeout(() => { app.relaunch(); app.exit(0) }, 1000)
+      else if (result.ok) setTimeout(() => { app.relaunch(); app.quit() }, 1000)
       return result
     } finally {
       if (!result?.ok) updateInProgress = false
@@ -283,5 +289,17 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
-app.on('before-quit', () => { engine?.kill().catch(() => {}); overlay?.kill(); bridge?.stop() })
+app.on('before-quit', (event) => {
+  if (shutdownFinished) return
+  event.preventDefault()
+  if (quitting) return
+  quitting = true
+  overlay?.kill()
+  Promise.resolve(bridge?.stop()).catch(error => {
+    console.error('Could not stop the local service:', error)
+  }).finally(() => {
+    shutdownFinished = true
+    app.quit()
+  })
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

@@ -1,6 +1,6 @@
 {
   "name": "chessist",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -8,15 +8,15 @@
     "vite": "vite",
     "electron": "electron .",
     "build": "bun scripts/build-renderer.mjs",
-    "dist": "npm run build && npm run build:firefox && electron-builder",
-    "pack": "npm run build && npm run build:firefox && electron-builder --dir",
+    "dist": "npm run build && npm run build:firefox && npm run build:ws-worker && electron-builder",
+    "pack": "npm run build && npm run build:firefox && npm run build:ws-worker && electron-builder --dir",
     "build:overlay": "powershell -ExecutionPolicy Bypass -File scripts/build-overlay.ps1",
     "build:firefox": "node scripts/build-firefox-ext.mjs",
+    "build:ws-worker": "bun scripts/build-ws-worker.mjs",
     "test": "vitest run"
   },
   "dependencies": {
-    "extract-zip": "^2.0.1",
-    "ws": "^8.18.0"
+    "extract-zip": "^2.0.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -29,7 +29,8 @@
     "react-markdown": "10.1.0",
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
-    "wait-on": "^8.0.1"
+    "wait-on": "^8.0.1",
+    "ws": "^8.18.0"
   },
   "build": {
     "appId": "dev.chessist.app",
@@ -38,7 +39,9 @@
     "extraResources": [
       { "from": "overlay/bin/Release/net48/ChessistOverlay.exe", "to": "overlay/ChessistOverlay.exe" },
       { "from": "extension", "to": "extension" },
-      { "from": "firefox", "to": "firefox" }
+      { "from": "firefox", "to": "firefox" },
+      { "from": "release/bun-ws-worker.exe", "to": "bun-ws-worker.exe" },
+      { "from": "build/bun-runtime-notices.md", "to": "bun-runtime-notices.md" }
     ],
     "win": { "target": "nsis", "icon": "build/icon.ico" },
     "nsis": { "artifactName": "Chessist Setup ${version}-${arch}.${ext}" },

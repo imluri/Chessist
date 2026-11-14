@@ -105,8 +105,11 @@ function ExtensionModule({ status }) {
   )
 
   return (
-    <ModuleCard title="Browser extension" state={needsUpdate ? 'working' : connected ? 'ok' : 'off'}
-      statusLabel={needsUpdate ? 'update available' : connected ? 'connected' : 'not connected'}>
+    <ModuleCard title="Browser extension" state={status.wsError ? 'error' : needsUpdate ? 'working' : connected ? 'ok' : 'off'}
+      statusLabel={status.wsError ? 'connection error' : needsUpdate ? 'update available' : connected ? 'connected' : 'not connected'}>
+      {status.wsError && <p role="status" style={{ color: STATUS.error.color, fontSize: 12, marginBottom: 10 }}>
+        Could not start the local connection. {status.wsError}
+      </p>}
       {connected && (
         <div style={{ marginBottom: !needsUpdate && !showInstructions ? 0 : 10 }}>
           <p style={{ fontSize: 12, color: 'rgb(var(--fg-muted))', lineHeight: 1.6 }}>

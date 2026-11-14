@@ -83,14 +83,19 @@ npm run build:overlay     # builds the C# overlay helper (overlay/bin/Release/ne
 npm run dev               # Vite + Electron
 ```
 
-Build an installer: `npm run dist` (output in `release/`). CI builds the overlay + installer on a
-`v*.*.*` tag.
+Build an installer: `npm run dist` (output in `release/`). The installer includes a standalone
+Bun executable for the local WebSocket listener. The first build may download Bun's Windows x64
+baseline runtime. CI builds the overlay and installer on a `v*.*.*` tag.
+
+The browser extension connects to the Bun service at `ws://127.0.0.1:27301`. Bun handles browser
+requests and runs native Stockfish. Electron hosts the UI, saves settings, and manages the
+installer and overlay. The service sends UI and overlay events over its process pipes.
 
 ## Project structure
 
 ```
 Chessist/
-├── electron/      # Electron main: Stockfish engine, WebSocket server, overlay driver, IPC
+├── electron/      # Electron main, Bun WebSocket worker, Stockfish, overlay driver, IPC
 ├── src/           # React renderer (sidebar, Evaluation, Settings modal, board, controls)
 ├── overlay/       # C# overlay helper — transparent, capture-invisible window (stdin-driven)
 ├── extension/     # browser extension (load unpacked)
